@@ -58,7 +58,7 @@ func TestOnMessage_learningThenHealthy(t *testing.T) {
 
 	d := OnMessage(s, b, start.Add(time.Duration(p.LearningMessages)*time.Minute), Override{}, p)
 	if !d.Transition || d.To != store.StateHealthy {
-		t.Errorf("expected learning→healthy, got %+v", d)
+		t.Errorf("expected learning to healthy, got %+v", d)
 	}
 	if !s.BaselineReady {
 		t.Errorf("baseline should be ready")
@@ -126,12 +126,12 @@ func TestOnMessage_recovery(t *testing.T) {
 		LastSeen:       time.Unix(1_700_000_000, 0),
 		MsgCount:       50,
 	}
-	// First message after offline → recovering.
+	// First message after offline transitions to recovering.
 	d := OnMessage(s, b, s.LastSeen.Add(10*time.Minute), Override{}, p)
 	if d.To != store.StateRecovering || !d.Transition {
 		t.Fatalf("expected recovering: %+v", d)
 	}
-	// Next message → healthy.
+	// Next message transitions to healthy.
 	d = OnMessage(s, b, s.LastSeen.Add(time.Minute), Override{}, p)
 	if d.To != store.StateHealthy || !d.Transition {
 		t.Fatalf("expected healthy: %+v", d)

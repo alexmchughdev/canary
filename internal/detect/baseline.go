@@ -1,23 +1,19 @@
-// Package detect holds the rolling-interval baseline and the per-sender
-// state machine described in foghorn-plan.md §Detection model. All math
-// is plain Go float64 — deliberately no stats lib, so the invariants
-// stay readable and the package has zero external deps.
+// Package detect holds the rolling-interval baseline and per-sender
+// state machine. All math is plain float64 with no external deps.
 package detect
 
 import "math"
 
 // Baseline keeps the last `cap` inter-arrival intervals (seconds) in a
-// ring buffer and exposes mean + stddev. The plan calls for an
-// exponentially-weighted rolling window of 100; we implement that as a
-// fixed-size ring with geometric sample weights on read so the window
-// self-trims without extra state per-sender.
+// ring buffer and exposes mean + stddev. The fixed-size ring self-trims
+// on wrap so per-sender state stays bounded.
 type Baseline struct {
 	buf       []float64
 	head      int
 	full      bool
 	count     int
 	cap       int
-	alpha     float64 // EWMA weight for newest sample; 0 < alpha <= 1
+	alpha     float64 // EWMA weight for newest sample, in (0, 1]
 	mean, m2  float64 // Welford running stats, updated on Add
 	totalSeen int
 }
@@ -36,8 +32,8 @@ func NewBaseline() *Baseline {
 }
 
 // Add records one inter-arrival interval in seconds. Welford keeps
-// mean/stddev O(1) without iterating the buffer; the ring is retained
-// so Recompute can re-derive stats if samples get evicted by wrap.
+// mean/stddev O(1) until the ring wraps. Once full we recompute in
+// place to avoid drift across many evictions.
 func (b *Baseline) Add(interval float64) {
 	b.totalSeen++
 	if b.full {
@@ -58,26 +54,19 @@ func (b *Baseline) Add(interval float64) {
 }
 
 func (b *Baseline) addToStats(x float64) {
-	// Welford update over the current window. When full==true we've
-	// already subtracted the outgoing sample via removeFromStats so n
-	// is stable at cap and this becomes a replace-one-sample update.
-	n := float64(b.activeN() + 1)
 	if !b.full {
-		// Fresh sample: classic Welford.
+		n := float64(b.activeN() + 1)
 		delta := x - b.mean
 		b.mean += delta / n
 		b.m2 += delta * (x - b.mean)
 		return
 	}
-	// Window is full; recompute in place to avoid drift on many wraps.
-	// Cheap — this only runs once we have ≥100 samples and only on ingest.
 	b.recomputeStats()
 }
 
-func (b *Baseline) removeFromStats(_ float64) {
-	// No-op in the ring model: addToStats handles the full-window
-	// recompute. Kept as a named step so the Add() flow reads clearly.
-}
+// removeFromStats is a no-op. Once the ring is full, addToStats triggers
+// a full recompute. Kept as a named step so Add() reads clearly.
+func (b *Baseline) removeFromStats(_ float64) {}
 
 func (b *Baseline) recomputeStats() {
 	n := b.activeN()
@@ -108,14 +97,12 @@ func (b *Baseline) activeN() int {
 
 func (b *Baseline) Count() int { return b.totalSeen }
 
-// Mean returns the windowed mean in seconds. Weighted variants live on
-// top of this; the plan's "exponentially weighted" phrasing is served
-// by BlendedMean below which biases toward recent intervals.
+// Mean is the windowed mean in seconds. Use BlendedMean for a
+// recency-biased view.
 func (b *Baseline) Mean() float64 { return b.mean }
 
-// Stddev returns sample stddev. Guards against <2 samples (returns 0)
-// so the state machine's (mean + kσ) thresholds degrade to (mean)
-// during the warmup phase.
+// Stddev returns the sample stddev, or 0 with fewer than 2 samples so
+// (mean + kσ) thresholds degrade gracefully during warmup.
 func (b *Baseline) Stddev() float64 {
 	n := b.activeN()
 	if n < 2 {
@@ -124,10 +111,9 @@ func (b *Baseline) Stddev() float64 {
 	return math.Sqrt(b.m2 / float64(n-1))
 }
 
-// BlendedMean mixes the windowed mean with an EWMA anchored on the most
-// recent sample. Keeps the baseline adaptive when a sender's cadence
-// genuinely shifts (plan: "adapts to genuine cadence changes without
-// manual reset"). Blend weight = alpha on newest, (1-alpha) on window.
+// BlendedMean mixes the windowed mean with the newest sample, weighted
+// alpha on newest and (1-alpha) on the window. Keeps the baseline
+// adaptive when a sender's real cadence shifts.
 func (b *Baseline) BlendedMean() float64 {
 	if b.activeN() == 0 {
 		return 0

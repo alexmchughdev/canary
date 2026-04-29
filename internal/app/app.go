@@ -1,6 +1,5 @@
-// Package app composes config + store + detect + connector + metrics into
-// the running Foghorn. Kept out of cmd/foghorn so main.go stays a thin
-// entrypoint and the wiring is testable in isolation.
+// Package app wires config, store, detect, connector, and metrics into a
+// running worker. main.go stays a thin entrypoint.
 package app
 
 import (
@@ -43,11 +42,15 @@ func New(cfg *config.Config, st store.Store, c connector.Connector, m *metrics.M
 	}
 }
 
-// Run blocks until ctx is cancelled. Owns four cooperating goroutines:
-// metrics server, connector stream, ticker, ingest consumer.
+// Run blocks until ctx is cancelled. It boots state, backfills history,
+// then runs the metrics server, connector stream, and ingest/tick loop
+// as cooperating goroutines.
 func (a *App) Run(ctx context.Context) error {
 	if err := a.rebuildBaselinesOnBoot(ctx); err != nil {
 		return fmt.Errorf("resume: %w", err)
+	}
+	if err := a.backfillHistory(ctx); err != nil {
+		return fmt.Errorf("backfill: %w", err)
 	}
 
 	messages := make(chan connector.Message, 256)
@@ -173,9 +176,8 @@ func (a *App) onTick(ctx context.Context, now time.Time) {
 }
 
 // applyDecision turns a state transition into connector + DB side-effects.
-// The alert-raise/clear split is what gives us dedup across restarts:
-// RaiseAlert is skipped when there's already an open alert, and
-// ClearOpenAlerts is idempotent.
+// Raise/clear are split so dedup survives restarts: RaiseAlert is a no-op
+// when an open alert already exists, ClearOpenAlerts is idempotent.
 func (a *App) applyDecision(ctx context.Context, sn *store.Sender, d detect.Decision, now time.Time) {
 	if !d.Transition {
 		return
@@ -215,10 +217,33 @@ func (a *App) reflectMetrics(sn *store.Sender) {
 	a.mets.BaselineReady.WithLabelValues(sn.SenderID, sn.ChannelID).Set(ready)
 }
 
-// rebuildBaselinesOnBoot seeds in-memory baselines from persisted
-// (mean, stddev) so we don't drop back to learning after a restart.
-// We can't reconstruct the full 100-sample window, but the mean seeds
-// it enough that BlendedMean produces sensible thresholds immediately.
+// backfillHistory pulls the lookback window from each connector and
+// drains it through onMessage before live streaming starts, so senders
+// can leave the learning state on boot. Synchronous drain prevents live
+// events from interleaving.
+func (a *App) backfillHistory(ctx context.Context) error {
+	since := time.Now().Add(-a.cfg.Learning.Lookback)
+	for _, c := range []connector.Connector{a.conn} {
+		msgs, err := c.History(ctx, since)
+		if err != nil {
+			return fmt.Errorf("connector %s: %w", c.Name(), err)
+		}
+		a.log.Info("history backfill",
+			"connector", c.Name(), "messages", len(msgs), "since", since)
+		for _, m := range msgs {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			a.onMessage(ctx, m)
+		}
+	}
+	return nil
+}
+
+// rebuildBaselinesOnBoot seeds in-memory baselines from each sender's
+// persisted mean so a restart doesn't drop everyone back into learning.
+// The full sample window can't be reconstructed, but the mean is enough
+// for BlendedMean to produce sensible thresholds immediately.
 func (a *App) rebuildBaselinesOnBoot(ctx context.Context) error {
 	senders, err := a.store.ListSenders(ctx)
 	if err != nil {

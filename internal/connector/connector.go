@@ -1,6 +1,5 @@
-// Package connector defines the contract every chat-platform integration
-// implements. Platform-specific code lives under subpackages and the worker
-// only ever sees Connector.
+// Package connector is the contract every chat-platform integration
+// implements. The worker only ever sees Connector.
 package connector
 
 import (
@@ -10,44 +9,34 @@ import (
 
 // Connector is one configured connection to one chat platform.
 type Connector interface {
-	// Name is a human-readable identifier from config (e.g. "prod-slack").
-	// Used in metrics labels and log fields. Must be unique within a Foghorn
-	// instance.
+	// Name is the logical identifier from config, used in metrics labels
+	// and log fields.
 	Name() string
 
-	// Platform is the platform family ("slack"). Stable across instances,
-	// used for routing.
+	// Platform is the platform family ("slack").
 	Platform() string
 
-	// History returns messages posted in monitored channels since `since`,
-	// in chronological order (oldest first). Used at boot to seed baselines
-	// and clusters before live monitoring begins.
+	// History returns messages from monitored channels since `since`,
+	// oldest first.
 	History(ctx context.Context, since time.Time) ([]Message, error)
 
-	// Stream blocks until ctx is cancelled, feeding live messages from
-	// monitored channels into out. Implementations are responsible for
-	// their own reconnection logic.
+	// Stream blocks until ctx is cancelled, feeding live messages into out.
 	Stream(ctx context.Context, out chan<- Message) error
 
-	// Post sends `text` to the given channel on this platform. Plain text
-	// only; formatting is the caller's concern. The Alerter abstraction
-	// (Phase 5) wraps this for typed alert delivery.
+	// Post sends plain text to a channel.
 	Post(ctx context.Context, channel, text string) error
 
-	// Close releases platform-specific resources. Safe to call multiple
-	// times.
+	// Close releases platform-specific resources.
 	Close() error
 }
 
-// Message is the platform-neutral view of one chat message ingested by
-// Foghorn. Text may be empty during Phase 1 — the Slack connector will not
-// populate it until Phase 4 widens ingest to support clustering.
+// Message is the platform-neutral view of one ingested chat message.
 type Message struct {
-	Platform  string    // "slack"
-	Connector string    // logical connector name from config
-	SenderID  string    // platform-specific user/bot id
-	ChannelID string    // platform-specific channel id
-	Timestamp time.Time // UTC
-	Text      string    // empty until Phase 4
-	SubType   string    // platform-specific message subtype, if any
+	Platform  string
+	Connector string
+	SenderID  string
+	ChannelID string
+	Timestamp time.Time
+	Text      string
+	SubType   string
 }

@@ -1,13 +1,12 @@
-// Package slack is the Slack implementation of connector.Connector.
-// It wraps slack-go's Socket Mode client with the narrow surface Foghorn
-// needs: stream channel messages as connector.Message values, post text
-// to arbitrary channels, auto-reconnect under the hood.
+// Package slack is the Slack implementation of connector.Connector,
+// wrapping slack-go's Socket Mode client.
 package slack
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -28,10 +27,10 @@ type Client struct {
 }
 
 type Options struct {
-	Name     string              // logical connector name from config
-	AppToken string              // xapp-… for Socket Mode
-	BotToken string              // xoxb-… for web API
-	Monitor  map[string]struct{} // channel IDs to ingest
+	Name     string
+	AppToken string
+	BotToken string
+	Monitor  map[string]struct{}
 	Logger   *slog.Logger
 }
 
@@ -57,15 +56,75 @@ func New(opts Options) (*Client, error) {
 func (c *Client) Name() string     { return c.name }
 func (c *Client) Platform() string { return platform }
 
-// History returns messages posted in monitored channels since `since`.
-// TODO(phase-2): implement via conversations.history.
+// History fans conversations.history across each monitored channel and
+// returns the merged result sorted oldest-first.
 func (c *Client) History(ctx context.Context, since time.Time) ([]connector.Message, error) {
-	return nil, nil
+	var out []connector.Message
+	for channelID := range c.monitor {
+		msgs, err := c.historyForChannel(ctx, channelID, since)
+		if err != nil {
+			return nil, fmt.Errorf("history %s: %w", channelID, err)
+		}
+		out = append(out, msgs...)
+	}
+	sortChronological(out)
+	return out, nil
 }
 
-// Stream blocks until ctx is done, feeding monitored channel messages to
-// out. The underlying slack-go Socket Mode client handles reconnects;
-// this method just acks events and filters.
+func sortChronological(msgs []connector.Message) {
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Timestamp.Before(msgs[j].Timestamp)
+	})
+}
+
+// historyForChannel pages conversations.history until the cursor is empty.
+func (c *Client) historyForChannel(ctx context.Context, channelID string, since time.Time) ([]connector.Message, error) {
+	var out []connector.Message
+	cursor := ""
+	for {
+		resp, err := c.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
+			ChannelID: channelID,
+			Oldest:    fmt.Sprintf("%d.000000", since.Unix()),
+			Cursor:    cursor,
+			Limit:     200,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range resp.Messages {
+			if m.SubType != "" && m.SubType != "bot_message" {
+				continue
+			}
+			sender := m.User
+			if sender == "" {
+				sender = m.BotID
+			}
+			if sender == "" {
+				continue
+			}
+			ts, err := parseSlackTS(m.Timestamp)
+			if err != nil {
+				continue
+			}
+			out = append(out, connector.Message{
+				Platform:  platform,
+				Connector: c.name,
+				SenderID:  sender,
+				ChannelID: channelID,
+				Timestamp: ts,
+				SubType:   m.SubType,
+			})
+		}
+		if !resp.HasMore {
+			break
+		}
+		cursor = resp.ResponseMetaData.NextCursor
+	}
+	return out, nil
+}
+
+// Stream blocks until ctx is done, feeding monitored channel messages to out.
+// slack-go's Socket Mode client handles reconnects internally.
 func (c *Client) Stream(ctx context.Context, out chan<- connector.Message) error {
 	go c.consume(ctx, out)
 
@@ -104,7 +163,6 @@ func (c *Client) handle(ctx context.Context, evt socketmode.Event, out chan<- co
 	case socketmode.EventTypeDisconnect:
 		c.log.Warn("slack socket disconnect")
 	case socketmode.EventTypeHello:
-		// no-op
 	case socketmode.EventTypeEventsAPI:
 		outer, ok := evt.Data.(slackevents.EventsAPIEvent)
 		if !ok {
@@ -117,9 +175,9 @@ func (c *Client) handle(ctx context.Context, evt socketmode.Event, out chan<- co
 	}
 }
 
+// forward filters edits/deletions and our own bot posts, then emits a
+// connector.Message. Only real new posts count as heartbeats.
 func (c *Client) forward(ctx context.Context, m *slackevents.MessageEvent, out chan<- connector.Message) {
-	// Ignore bot messages we posted ourselves and message edits/deletions —
-	// only real new heartbeats count as a tick.
 	if m.SubType != "" && m.SubType != "bot_message" {
 		return
 	}
@@ -151,9 +209,6 @@ func (c *Client) forward(ctx context.Context, m *slackevents.MessageEvent, out c
 	}
 }
 
-// Post sends a plain-text message to the given channel. Caller formats
-// the body; this package stays transport-only so callers (the alerter
-// in Phase 5) can own message shape.
 func (c *Client) Post(ctx context.Context, channel, text string) error {
 	_, _, err := c.api.PostMessageContext(ctx, channel,
 		slack.MsgOptionText(text, false),
@@ -162,13 +217,11 @@ func (c *Client) Post(ctx context.Context, channel, text string) error {
 	return err
 }
 
-// Close is a no-op; slack-go's Socket Mode client doesn't require explicit
-// shutdown beyond ctx cancellation. Provided for Connector symmetry.
+// Close is a no-op. ctx cancellation is enough to shut down Socket Mode.
 func (c *Client) Close() error { return nil }
 
-// parseSlackTS converts "1713790000.000123" → time.Time. Slack uses
-// seconds.microseconds as a string; we only need second precision for
-// baseline math so we truncate.
+// parseSlackTS converts a Slack timestamp ("1713790000.000123") to
+// time.Time, keeping microsecond precision.
 func parseSlackTS(s string) (time.Time, error) {
 	var secs, usecs int64
 	_, err := fmt.Sscanf(s, "%d.%d", &secs, &usecs)

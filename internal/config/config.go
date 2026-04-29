@@ -13,6 +13,7 @@ type Config struct {
 	Slack     SlackConfig          `yaml:"slack"`
 	Channels  ChannelsConfig       `yaml:"channels"`
 	Detection DetectionConfig      `yaml:"detection"`
+	Learning  LearningConfig       `yaml:"learning"`
 	Store     StoreConfig          `yaml:"store"`
 	Metrics   MetricsConfig        `yaml:"metrics"`
 	Senders   map[string]SenderCfg `yaml:"senders"`
@@ -35,6 +36,41 @@ type DetectionConfig struct {
 	HardCap           time.Duration `yaml:"hard_cap"`
 }
 
+type LearningConfig struct {
+	Lookback time.Duration `yaml:"lookback"`
+}
+
+// UnmarshalYAML extends time.Duration parsing with a "d" (day) suffix.
+// yaml.v3's default decoder rejects "d" since time.ParseDuration does.
+func (l *LearningConfig) UnmarshalYAML(node *yaml.Node) error {
+	raw := struct {
+		Lookback string `yaml:"lookback"`
+	}{}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	if raw.Lookback == "" {
+		return nil
+	}
+	d, err := parseLookbackDuration(raw.Lookback)
+	if err != nil {
+		return fmt.Errorf("learning.lookback %q: %w", raw.Lookback, err)
+	}
+	l.Lookback = d
+	return nil
+}
+
+func parseLookbackDuration(s string) (time.Duration, error) {
+	if n := len(s); n > 1 && s[n-1] == 'd' {
+		days, err := time.ParseDuration(s[:n-1] + "h")
+		if err != nil {
+			return 0, err
+		}
+		return days * 24, nil
+	}
+	return time.ParseDuration(s)
+}
+
 type StoreConfig struct {
 	Path string `yaml:"path"`
 }
@@ -43,9 +79,9 @@ type MetricsConfig struct {
 	Addr string `yaml:"addr"`
 }
 
-// SenderCfg is a per-sender override. The YAML shape accepts either a
-// bare duration string ("5m"), the literal "auto", or a mapping with
-// {interval, priority}. UnmarshalYAML normalises all three.
+// SenderCfg is a per-sender override. The YAML shape accepts a bare
+// duration ("5m"), the literal "auto", or a mapping with {interval,
+// priority}. UnmarshalYAML normalises all three.
 type SenderCfg struct {
 	Auto     bool
 	Interval time.Duration
@@ -118,6 +154,9 @@ func (c *Config) applyDefaults() {
 	if c.Detection.HardCap == 0 {
 		c.Detection.HardCap = 30 * time.Minute
 	}
+	if c.Learning.Lookback == 0 {
+		c.Learning.Lookback = 7 * 24 * time.Hour
+	}
 	if c.Store.Path == "" {
 		c.Store.Path = "foghorn.db"
 	}
@@ -151,9 +190,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Tokens resolves Slack tokens from the configured env vars. Returns an
-// error if either is unset — we fail fast at startup rather than during
-// the first Slack handshake.
+// Tokens resolves Slack tokens from the configured env vars. Errors if
+// either is unset so startup fails fast rather than at first handshake.
 func (c *Config) Tokens() (app, bot string, err error) {
 	app = os.Getenv(c.Slack.AppTokenEnv)
 	bot = os.Getenv(c.Slack.BotTokenEnv)
@@ -167,7 +205,7 @@ func (c *Config) Tokens() (app, bot string, err error) {
 }
 
 // MonitoredChannels returns the configured channel IDs as a set for
-// O(1) membership checks in the message handler.
+// O(1) membership checks.
 func (c *Config) MonitoredChannels() map[string]struct{} {
 	s := make(map[string]struct{}, len(c.Channels.Monitor))
 	for _, id := range c.Channels.Monitor {

@@ -86,6 +86,29 @@ channels:
 	if c.Metrics.Addr != ":9090" {
 		t.Errorf("default metrics addr: %q", c.Metrics.Addr)
 	}
+	if c.Learning.Lookback != 7*24*time.Hour {
+		t.Errorf("default lookback: %v", c.Learning.Lookback)
+	}
+}
+
+func TestLoad_learningLookback(t *testing.T) {
+	cases := map[string]time.Duration{
+		"7d":   7 * 24 * time.Hour,
+		"3d":   3 * 24 * time.Hour,
+		"12h":  12 * time.Hour,
+		"30m":  30 * time.Minute,
+		"168h": 168 * time.Hour,
+	}
+	for in, want := range cases {
+		body := "channels: {monitor: [C1], alert_to: CALERT}\nlearning: {lookback: " + in + "}\n"
+		c, err := Load(writeTmp(t, body))
+		if err != nil {
+			t.Fatalf("load %q: %v", in, err)
+		}
+		if c.Learning.Lookback != want {
+			t.Errorf("lookback %q = %v, want %v", in, c.Learning.Lookback, want)
+		}
+	}
 }
 
 func TestValidate_errors(t *testing.T) {

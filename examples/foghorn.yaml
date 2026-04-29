@@ -14,6 +14,9 @@ detection:
   offline_multiplier: 5
   hard_cap: 30m
 
+learning:
+  lookback: 7d
+
 store:
   path: /var/lib/foghorn/foghorn.db
 

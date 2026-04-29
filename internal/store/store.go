@@ -1,6 +1,5 @@
-// Package store persists sender baselines and in-flight alerts so
-// Foghorn can survive restarts without losing learned cadence or double-
-// firing alerts on recovery.
+// Package store persists sender baselines and in-flight alerts so a
+// restart doesn't lose learned cadence or double-fire alerts on recovery.
 package store
 
 import (
@@ -18,9 +17,9 @@ const (
 	StateRecovering SenderState = "recovering"
 )
 
-// Sender is the persisted per-(sender, channel) record. Baseline is kept
-// as mean+stddev so detection math stays O(1) per ingest — the full
-// interval window lives only in memory.
+// Sender is the persisted per-(sender, channel) record. Baseline is
+// stored as mean+stddev so detection math stays O(1) per ingest. The
+// full interval window lives only in memory.
 type Sender struct {
 	SenderID       string
 	ChannelID      string
@@ -36,8 +35,8 @@ type Sender struct {
 }
 
 // Alert is a single state-transition record. ClearedAt is NULL while
-// the alert is in-flight; the boot-time resume logic relies on that to
-// avoid re-alerting known-offline senders.
+// the alert is in-flight, which boot-time resume uses to avoid
+// re-alerting known-offline senders.
 type Alert struct {
 	ID                  int64
 	SenderID            string

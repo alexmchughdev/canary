@@ -3,6 +3,8 @@ package slack
 import (
 	"testing"
 	"time"
+
+	"github.com/alexmchughdev/foghorn/internal/connector"
 )
 
 func TestParseSlackTS(t *testing.T) {
@@ -35,6 +37,29 @@ func TestNew_requiresTokens(t *testing.T) {
 	if _, err := New(Options{BotToken: "xoxb-1"}); err == nil {
 		t.Fatal("expected error when app token missing")
 	}
+}
+
+// Exercises the in-place sort History applies after merging
+// conversations.history results across channels.
+func TestSortChronological(t *testing.T) {
+	t0 := time.Unix(1700000000, 0).UTC()
+	in := []connector.Message{
+		{ChannelID: "C2", Timestamp: t0.Add(30 * time.Second)},
+		{ChannelID: "C1", Timestamp: t0.Add(10 * time.Second)},
+		{ChannelID: "C2", Timestamp: t0.Add(5 * time.Second)},
+		{ChannelID: "C1", Timestamp: t0.Add(20 * time.Second)},
+	}
+	sortChronological(in)
+	for i := 1; i < len(in); i++ {
+		if in[i-1].Timestamp.After(in[i].Timestamp) {
+			t.Fatalf("not chronological at %d: %v then %v", i, in[i-1].Timestamp, in[i].Timestamp)
+		}
+	}
+}
+
+func TestSortChronological_empty(t *testing.T) {
+	sortChronological(nil)
+	sortChronological([]connector.Message{})
 }
 
 func TestClient_NameAndPlatform(t *testing.T) {

@@ -1,6 +1,5 @@
-// Package metrics exposes the Prometheus surface listed in
-// foghorn-plan.md §Metrics exposed. Cardinality stays bounded because
-// sender and channel IDs come from the finite configured set.
+// Package metrics exposes the Prometheus surface. Cardinality stays
+// bounded since sender and channel IDs come from the configured set.
 package metrics
 
 import (
@@ -65,9 +64,8 @@ func New() *Metrics {
 	return m
 }
 
-// Serve runs an HTTP server exposing /metrics. Blocks until ctx done
-// or listener error; caller runs it in a goroutine and shares ctx
-// with the rest of the process.
+// Serve runs the /metrics + /healthz HTTP server until ctx is cancelled
+// or the listener fails. Callers run it in a goroutine.
 func (m *Metrics) Serve(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{}))

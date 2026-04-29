@@ -7,9 +7,8 @@ import (
 	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
-// Params captures the numeric knobs used during detection. Kept
-// separate from config.DetectionConfig so detect has no dependency on
-// YAML parsing and tests can exercise thresholds directly.
+// Params holds the numeric knobs used during detection, decoupled from
+// config.DetectionConfig so this package has no YAML dependency.
 type Params struct {
 	LearningMessages  int
 	DriftSigma        float64
@@ -26,22 +25,19 @@ func FromConfig(c config.DetectionConfig) Params {
 	}
 }
 
-// Decision is the outcome of evaluating one sender. Transition is set
-// iff the state changed; the caller uses that to decide whether to
-// post an alert or recovery message.
+// Decision is the outcome of evaluating one sender. Transition is true
+// when the state changed and the caller should raise or clear an alert.
 type Decision struct {
 	From       store.SenderState
 	To         store.SenderState
 	Transition bool
-	// Interval at time of evaluation, seconds. Used for alert body
-	// ("silent for 12m"), not by the state machine itself.
+	// Silence at evaluation time in seconds, used for alert text only.
 	SilentSeconds float64
 }
 
-// Override carries per-sender config overrides that influence state.
-// Interval pins the baseline to a known cadence (skips learning);
-// Priority is opaque to detect but surfaced to callers for alert
-// routing.
+// Override carries per-sender config overrides. Interval pins the
+// baseline to a known cadence and skips learning. Priority is opaque
+// here and surfaced to callers for alert routing.
 type Override struct {
 	HasInterval bool
 	Interval    time.Duration
@@ -49,8 +45,8 @@ type Override struct {
 }
 
 // OnMessage evaluates state when a new message arrives. The sender
-// record is mutated in place; the caller persists the result. Returns
-// the decision so the caller can raise/clear alerts in the store.
+// record is mutated in place. Callers persist the result and act on
+// the returned Decision.
 func OnMessage(s *store.Sender, b *Baseline, at time.Time, ov Override, p Params) Decision {
 	d := Decision{From: s.State}
 
@@ -83,8 +79,8 @@ func OnMessage(s *store.Sender, b *Baseline, at time.Time, ov Override, p Params
 
 	switch {
 	case ov.HasInterval:
+		// Pin baseline to override so OnTick uses a stable mean.
 		s.BaselineReady = true
-		// Pin baseline to override so Tick uses a stable mean.
 		s.IntervalMean = ov.Interval.Seconds()
 		s.IntervalStddev = 0
 	case s.MsgCount >= p.LearningMessages:
@@ -106,9 +102,9 @@ func OnMessage(s *store.Sender, b *Baseline, at time.Time, ov Override, p Params
 	return d
 }
 
-// OnTick evaluates state purely from the clock — the 30s timer fires
-// this for every known sender so we catch drifts/offlines without
-// waiting for the next message (which by definition isn't coming).
+// OnTick evaluates state from the clock alone. The periodic timer
+// runs this for every known sender so drifts and offlines fire even
+// when the next message never arrives.
 func OnTick(s *store.Sender, at time.Time, ov Override, p Params) Decision {
 	d := Decision{From: s.State}
 	if !s.BaselineReady || s.LastSeen.IsZero() {
@@ -141,7 +137,7 @@ func OnTick(s *store.Sender, at time.Time, ov Override, p Params) Decision {
 		target = store.StateHealthy
 	}
 
-	// Don't downgrade offline→drifting on tick; wait for a message.
+	// Don't downgrade offline to drifting on a tick. Wait for a message.
 	if s.State == store.StateOffline && target == store.StateDrifting {
 		target = store.StateOffline
 	}
