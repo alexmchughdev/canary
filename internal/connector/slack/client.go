@@ -112,6 +112,7 @@ func (c *Client) historyForChannel(ctx context.Context, channelID string, since 
 				SenderID:  sender,
 				ChannelID: channelID,
 				Timestamp: ts,
+				Text:      m.Text,
 				SubType:   m.SubType,
 			})
 		}
@@ -177,6 +178,14 @@ func (c *Client) handle(ctx context.Context, evt socketmode.Event, out chan<- co
 
 // forward filters edits/deletions and our own bot posts, then emits a
 // connector.Message. Only real new posts count as heartbeats.
+//
+// Message text is populated for content-cluster anomaly detection. The
+// original Slack-only design excluded text on the assumption that
+// frequency was the only signal; the brief was updated to require
+// structural content analysis (TF-IDF + DBSCAN clustering, schema
+// fingerprinting). Content lives in memory by default and is only
+// persisted as cluster sample messages and centroid vectors, not as a
+// full message archive.
 func (c *Client) forward(ctx context.Context, m *slackevents.MessageEvent, out chan<- connector.Message) {
 	if m.SubType != "" && m.SubType != "bot_message" {
 		return
@@ -204,6 +213,7 @@ func (c *Client) forward(ctx context.Context, m *slackevents.MessageEvent, out c
 		SenderID:  sender,
 		ChannelID: m.Channel,
 		Timestamp: ts,
+		Text:      m.Text,
 		SubType:   m.SubType,
 	}:
 	}

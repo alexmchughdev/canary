@@ -13,13 +13,15 @@ import (
 )
 
 type Metrics struct {
-	SendersTotal      *prometheus.GaugeVec   // {channel, state}
-	LastSeenSeconds   *prometheus.GaugeVec   // {sender, channel}
-	Transitions       *prometheus.CounterVec // {sender, from_state, to_state}
-	AlertsRaised      *prometheus.CounterVec // {sender, state}
-	MessagesIngested  *prometheus.CounterVec // {channel}
-	SlackDisconnects  prometheus.Counter
-	BaselineReady     *prometheus.GaugeVec // {sender, channel}
+	SendersTotal       *prometheus.GaugeVec   // {channel, state}
+	LastSeenSeconds    *prometheus.GaugeVec   // {sender, channel}
+	Transitions        *prometheus.CounterVec // {sender, from_state, to_state}
+	AlertsRaised       *prometheus.CounterVec // {sender, state}
+	MessagesIngested   *prometheus.CounterVec // {channel}
+	SlackDisconnects   prometheus.Counter
+	BaselineReady      *prometheus.GaugeVec   // {sender, channel}
+	MessagesClassified *prometheus.CounterVec // {channel, cluster_id, status}
+	ClustersTotal      *prometheus.GaugeVec   // {channel}
 
 	reg *prometheus.Registry
 }
@@ -56,10 +58,19 @@ func New() *Metrics {
 			Name: "foghorn_baseline_ready",
 			Help: "1 if the baseline for a sender has crossed the learning threshold, else 0.",
 		}, []string{"sender", "channel"}),
+		MessagesClassified: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "foghorn_messages_classified_total",
+			Help: "Live messages classified against learned cluster fingerprints.",
+		}, []string{"channel", "cluster_id", "status"}),
+		ClustersTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "foghorn_clusters_total",
+			Help: "Number of learned content clusters per channel.",
+		}, []string{"channel"}),
 	}
 	reg.MustRegister(
 		m.SendersTotal, m.LastSeenSeconds, m.Transitions,
 		m.AlertsRaised, m.MessagesIngested, m.SlackDisconnects, m.BaselineReady,
+		m.MessagesClassified, m.ClustersTotal,
 	)
 	return m
 }

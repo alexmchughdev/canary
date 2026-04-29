@@ -17,6 +17,15 @@ detection:
 learning:
   lookback: 7d
 
+cluster:
+  epsilon: 0.4
+  min_pts: 3
+  match_threshold: 0.5
+  stable_ratio: 0.8
+
+alerts:
+  cooldown_per_kind: 15m
+
 store:
   path: /var/lib/foghorn/foghorn.db
 

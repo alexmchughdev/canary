@@ -16,23 +16,26 @@ type BuildOptions struct {
 // Build templatises, tokenises, vectorises, clusters, and fingerprints
 // the input messages. Noise points are excluded from the result.
 func Build(messages []string, opts BuildOptions) []Cluster {
-	if len(messages) == 0 {
-		return nil
-	}
+	clusters, _ := BuildWithVectoriser(messages, opts)
+	return clusters
+}
 
+// BuildWithVectoriser is like Build but also returns the fitted
+// Vectoriser so callers can vectorise live messages with the same IDF.
+func BuildWithVectoriser(messages []string, opts BuildOptions) ([]Cluster, *Vectoriser) {
+	v := NewVectoriser()
+	if len(messages) == 0 {
+		return nil, v
+	}
 	tokens := make([][]string, len(messages))
 	for i, m := range messages {
 		tokens[i] = Tokenize(Templatize(m))
 	}
-
-	v := NewVectoriser()
 	v.Fit(tokens)
-
 	vecs := make([]map[string]float64, len(tokens))
 	for i, doc := range tokens {
 		vecs[i] = v.Vectorise(doc)
 	}
-
 	labels := DBSCAN(vecs, Params{Epsilon: opts.Epsilon, MinPts: opts.MinPts})
 
 	groups := map[int][]int{}
@@ -56,5 +59,5 @@ func Build(messages []string, opts BuildOptions) []Cluster {
 			Members:     members,
 		})
 	}
-	return out
+	return out, v
 }

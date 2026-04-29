@@ -14,6 +14,8 @@ type Config struct {
 	Channels  ChannelsConfig       `yaml:"channels"`
 	Detection DetectionConfig      `yaml:"detection"`
 	Learning  LearningConfig       `yaml:"learning"`
+	Cluster   ClusterConfig        `yaml:"cluster"`
+	Alerts    AlertsConfig         `yaml:"alerts"`
 	Store     StoreConfig          `yaml:"store"`
 	Metrics   MetricsConfig        `yaml:"metrics"`
 	Senders   map[string]SenderCfg `yaml:"senders"`
@@ -38,6 +40,22 @@ type DetectionConfig struct {
 
 type LearningConfig struct {
 	Lookback time.Duration `yaml:"lookback"`
+}
+
+type ClusterConfig struct {
+	Epsilon          float64 `yaml:"epsilon"`
+	MinPts           int     `yaml:"min_pts"`
+	MatchThreshold   float64 `yaml:"match_threshold"`
+	StableRatio      float64 `yaml:"stable_ratio"`
+}
+
+// AlertsConfig holds alert-routing knobs. CooldownPerKind suppresses
+// repeated alerts of the same kind on the same channel. It applies to
+// content-cluster alerts (unknown_pattern, abnormal_content,
+// missing_pattern). Frequency alerts use their existing per-(channel,
+// sender) raise/clear dedup and are unaffected.
+type AlertsConfig struct {
+	CooldownPerKind time.Duration `yaml:"cooldown_per_kind"`
 }
 
 // UnmarshalYAML extends time.Duration parsing with a "d" (day) suffix.
@@ -156,6 +174,21 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Learning.Lookback == 0 {
 		c.Learning.Lookback = 7 * 24 * time.Hour
+	}
+	if c.Cluster.Epsilon == 0 {
+		c.Cluster.Epsilon = 0.4
+	}
+	if c.Cluster.MinPts == 0 {
+		c.Cluster.MinPts = 3
+	}
+	if c.Cluster.MatchThreshold == 0 {
+		c.Cluster.MatchThreshold = 0.5
+	}
+	if c.Cluster.StableRatio == 0 {
+		c.Cluster.StableRatio = 0.8
+	}
+	if c.Alerts.CooldownPerKind == 0 {
+		c.Alerts.CooldownPerKind = 15 * time.Minute
 	}
 	if c.Store.Path == "" {
 		c.Store.Path = "foghorn.db"

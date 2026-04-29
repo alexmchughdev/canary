@@ -89,6 +89,15 @@ channels:
 	if c.Learning.Lookback != 7*24*time.Hour {
 		t.Errorf("default lookback: %v", c.Learning.Lookback)
 	}
+	if c.Cluster.Epsilon != 0.4 || c.Cluster.MinPts != 3 {
+		t.Errorf("default cluster: %+v", c.Cluster)
+	}
+	if c.Cluster.MatchThreshold != 0.5 || c.Cluster.StableRatio != 0.8 {
+		t.Errorf("default cluster thresholds: %+v", c.Cluster)
+	}
+	if c.Alerts.CooldownPerKind != 15*time.Minute {
+		t.Errorf("default cooldown: %v", c.Alerts.CooldownPerKind)
+	}
 }
 
 func TestLoad_learningLookback(t *testing.T) {
