@@ -33,6 +33,7 @@ func run(cfgPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	cfg.MigrateAlertTo(log)
 	appToken, botToken, err := cfg.Tokens()
 	if err != nil {
 		return fmt.Errorf("tokens: %w", err)
@@ -59,12 +60,17 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	defer func() { _ = sc.Close() }()
 
+	multi, err := app.BuildAlerter(cfg, log)
+	if err != nil {
+		return fmt.Errorf("alerter: %w", err)
+	}
+
 	m := metrics.New()
-	a := app.New(cfg, st, sc, m, log)
+	a := app.New(cfg, st, sc, multi, m, log)
 
 	log.Info("foghorn starting",
 		"channels", len(cfg.Channels.Monitor),
-		"alert_to", cfg.Channels.AlertTo,
+		"alerters", len(cfg.Alerters),
 		"metrics", cfg.Metrics.Addr)
 
 	return a.Run(ctx)

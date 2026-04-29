@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -16,9 +17,29 @@ type Config struct {
 	Learning  LearningConfig       `yaml:"learning"`
 	Cluster   ClusterConfig        `yaml:"cluster"`
 	Alerts    AlertsConfig         `yaml:"alerts"`
+	Alerters  []AlerterConfig      `yaml:"alerters"`
 	Store     StoreConfig          `yaml:"store"`
 	Metrics   MetricsConfig        `yaml:"metrics"`
 	Senders   map[string]SenderCfg `yaml:"senders"`
+}
+
+// AlerterConfig describes one alert sink. Type discriminates which
+// fields below apply.
+type AlerterConfig struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"` // "slack" or "email"
+
+	// slack
+	BotTokenEnv string   `yaml:"bot_token_env"`
+	Channels    []string `yaml:"channels"`
+
+	// email
+	SMTPHost    string   `yaml:"smtp_host"`
+	SMTPPort    int      `yaml:"smtp_port"`
+	UserEnv     string   `yaml:"user_env"`
+	PasswordEnv string   `yaml:"password_env"`
+	From        string   `yaml:"from"`
+	To          []string `yaml:"to"`
 }
 
 type SlackConfig struct {
@@ -208,8 +229,8 @@ func (c *Config) Validate() error {
 	if len(c.Channels.Monitor) == 0 {
 		return errors.New("channels.monitor must list at least one channel id")
 	}
-	if c.Channels.AlertTo == "" {
-		return errors.New("channels.alert_to is required")
+	if c.Channels.AlertTo == "" && len(c.Alerters) == 0 {
+		return errors.New("either channels.alert_to or alerters must be configured")
 	}
 	if c.Detection.DriftSigma <= 0 {
 		return errors.New("detection.drift_sigma must be > 0")
@@ -220,7 +241,46 @@ func (c *Config) Validate() error {
 	if c.Detection.LearningMessages < 2 {
 		return errors.New("detection.learning_messages must be >= 2")
 	}
+	for i, ac := range c.Alerters {
+		if ac.Name == "" {
+			return fmt.Errorf("alerters[%d]: name required", i)
+		}
+		switch ac.Type {
+		case "slack":
+			if len(ac.Channels) == 0 {
+				return fmt.Errorf("alerters[%d] %q: channels required", i, ac.Name)
+			}
+		case "email":
+			if ac.SMTPHost == "" || ac.SMTPPort == 0 {
+				return fmt.Errorf("alerters[%d] %q: smtp_host and smtp_port required", i, ac.Name)
+			}
+			if ac.From == "" || len(ac.To) == 0 {
+				return fmt.Errorf("alerters[%d] %q: from and to required", i, ac.Name)
+			}
+		default:
+			return fmt.Errorf("alerters[%d] %q: unknown type %q", i, ac.Name, ac.Type)
+		}
+	}
 	return nil
+}
+
+// MigrateAlertTo synthesizes a default Slack alerter from the legacy
+// channels.alert_to field when no alerters: block was provided. Logs a
+// deprecation warning. Idempotent and safe to call when alerters is
+// already populated.
+func (c *Config) MigrateAlertTo(log *slog.Logger) {
+	if len(c.Alerters) > 0 || c.Channels.AlertTo == "" {
+		return
+	}
+	if log != nil {
+		log.Warn("config: channels.alert_to is deprecated; use alerters: block")
+	}
+	c.Alerters = []AlerterConfig{{
+		Name:        "default-slack",
+		Type:        "slack",
+		BotTokenEnv: c.Slack.BotTokenEnv,
+		Channels:    []string{c.Channels.AlertTo},
+	}}
 }
 
 // Tokens resolves Slack tokens from the configured env vars. Errors if

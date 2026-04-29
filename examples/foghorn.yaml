@@ -26,6 +26,24 @@ cluster:
 alerts:
   cooldown_per_kind: 15m
 
+alerters:
+  - name: ops-slack
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels:
+      - C01234IJKL
+
+  - name: ops-email
+    type: email
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    user_env: SMTP_USER
+    password_env: SMTP_PASSWORD
+    from: foghorn@example.com
+    to:
+      - ops@example.com
+      - oncall@example.com
+
 store:
   path: /var/lib/foghorn/foghorn.db
 

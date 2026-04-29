@@ -122,8 +122,34 @@ func TestLoad_learningLookback(t *testing.T) {
 
 func TestValidate_errors(t *testing.T) {
 	cases := map[string]string{
-		"no monitor": `channels: {alert_to: X}`,
-		"no alert":   `channels: {monitor: [C1]}`,
+		"no monitor":    `channels: {alert_to: X}`,
+		"no alert sink": `channels: {monitor: [C1]}`,
+		"alerter missing name": `
+channels: {monitor: [C1]}
+alerters:
+  - type: slack
+    channels: [C1]
+`,
+		"alerter unknown type": `
+channels: {monitor: [C1]}
+alerters:
+  - name: x
+    type: pagerduty
+`,
+		"slack alerter missing channels": `
+channels: {monitor: [C1]}
+alerters:
+  - name: ops
+    type: slack
+`,
+		"email alerter missing host": `
+channels: {monitor: [C1]}
+alerters:
+  - name: ops
+    type: email
+    from: a@b
+    to: [c@d]
+`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -131,6 +157,69 @@ func TestValidate_errors(t *testing.T) {
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+func TestLoad_alertersBlock(t *testing.T) {
+	body := `
+channels: {monitor: [C1]}
+alerters:
+  - name: ops-slack
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [C1]
+  - name: ops-email
+    type: email
+    smtp_host: smtp.example
+    smtp_port: 587
+    from: foghorn@example.com
+    to: [ops@example.com, oncall@example.com]
+`
+	c, err := Load(writeTmp(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Alerters) != 2 {
+		t.Fatalf("alerters len=%d", len(c.Alerters))
+	}
+	if c.Alerters[0].Type != "slack" || c.Alerters[1].Type != "email" {
+		t.Errorf("types: %+v", c.Alerters)
+	}
+	if c.Alerters[1].SMTPPort != 587 {
+		t.Errorf("smtp port: %d", c.Alerters[1].SMTPPort)
+	}
+}
+
+func TestMigrateAlertTo_synthesizesDefaultSlackAlerter(t *testing.T) {
+	body := `
+channels: {monitor: [C1], alert_to: CALERT}
+slack: {bot_token_env: X_BOT}
+`
+	c, err := Load(writeTmp(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Alerters) != 0 {
+		t.Fatalf("alerters should be empty before migrate, got %+v", c.Alerters)
+	}
+	c.MigrateAlertTo(nil)
+	if len(c.Alerters) != 1 {
+		t.Fatalf("after migrate, alerters len=%d", len(c.Alerters))
+	}
+	a := c.Alerters[0]
+	if a.Type != "slack" || a.Channels[0] != "CALERT" || a.BotTokenEnv != "X_BOT" {
+		t.Errorf("synthesized alerter: %+v", a)
+	}
+}
+
+func TestMigrateAlertTo_noopWhenAlertersConfigured(t *testing.T) {
+	c := &Config{
+		Channels: ChannelsConfig{AlertTo: "CALERT"},
+		Alerters: []AlerterConfig{{Name: "x", Type: "slack", Channels: []string{"C1"}}},
+	}
+	c.MigrateAlertTo(nil)
+	if len(c.Alerters) != 1 {
+		t.Errorf("should not duplicate, got %d", len(c.Alerters))
 	}
 }
 

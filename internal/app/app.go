@@ -6,10 +6,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/alexmchughdev/foghorn/internal/alerter"
+	emailalerter "github.com/alexmchughdev/foghorn/internal/alerter/email"
+	slackalerter "github.com/alexmchughdev/foghorn/internal/alerter/slack"
 	"github.com/alexmchughdev/foghorn/internal/cluster"
 	"github.com/alexmchughdev/foghorn/internal/config"
 	"github.com/alexmchughdev/foghorn/internal/connector"
@@ -18,15 +22,55 @@ import (
 	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
+// BuildAlerter constructs the multi-sink alerter from config. Each entry
+// in cfg.Alerters becomes one sink; the result is a Multi that fans out
+// to all sinks concurrently.
+func BuildAlerter(cfg *config.Config, log *slog.Logger) (*alerter.Multi, error) {
+	sinks := make([]alerter.Alerter, 0, len(cfg.Alerters))
+	for _, ac := range cfg.Alerters {
+		s, err := buildOne(ac)
+		if err != nil {
+			return nil, fmt.Errorf("alerter %q: %w", ac.Name, err)
+		}
+		sinks = append(sinks, s)
+	}
+	return alerter.NewMulti(log, sinks...), nil
+}
+
+func buildOne(ac config.AlerterConfig) (alerter.Alerter, error) {
+	switch ac.Type {
+	case "slack":
+		token := os.Getenv(ac.BotTokenEnv)
+		return slackalerter.New(slackalerter.Options{
+			Name:     ac.Name,
+			Token:    token,
+			Channels: ac.Channels,
+		})
+	case "email":
+		return emailalerter.New(emailalerter.Options{
+			Name:     ac.Name,
+			Host:     ac.SMTPHost,
+			Port:     ac.SMTPPort,
+			User:     os.Getenv(ac.UserEnv),
+			Password: os.Getenv(ac.PasswordEnv),
+			From:     ac.From,
+			To:       ac.To,
+		})
+	default:
+		return nil, fmt.Errorf("unknown alerter type %q", ac.Type)
+	}
+}
+
 const tickInterval = 30 * time.Second
 
 type App struct {
-	cfg    *config.Config
-	store  store.Store
-	conn   connector.Connector
-	mets   *metrics.Metrics
-	log    *slog.Logger
-	params detect.Params
+	cfg     *config.Config
+	store   store.Store
+	conn    connector.Connector
+	alerter alerter.Alerter
+	mets    *metrics.Metrics
+	log     *slog.Logger
+	params  detect.Params
 
 	mu sync.Mutex
 	// baselines tracks per-(sender, channel) inter-arrival baselines.
@@ -54,11 +98,12 @@ type clusterState struct {
 	lastSeen     time.Time
 }
 
-func New(cfg *config.Config, st store.Store, c connector.Connector, m *metrics.Metrics, log *slog.Logger) *App {
+func New(cfg *config.Config, st store.Store, c connector.Connector, a alerter.Alerter, m *metrics.Metrics, log *slog.Logger) *App {
 	return &App{
 		cfg:              cfg,
 		store:            st,
 		conn:             c,
+		alerter:          a,
 		mets:             m,
 		log:              log,
 		params:           detect.FromConfig(cfg.Detection),
@@ -245,10 +290,10 @@ func (a *App) applyDecision(ctx context.Context, sn *store.Sender, d detect.Deci
 			return
 		}
 		a.mets.AlertsRaised.WithLabelValues(sn.SenderID, string(d.To)).Inc()
-		_ = a.conn.Post(ctx, a.cfg.Channels.AlertTo, formatAlert(sn, d))
+		_ = a.alerter.Send(ctx, a.frequencyAlert(sn, d, now))
 	case store.StateRecovering:
 		_ = a.store.ClearOpenAlerts(ctx, sn.SenderID, sn.ChannelID, now)
-		_ = a.conn.Post(ctx, a.cfg.Channels.AlertTo, formatRecovery(sn, d))
+		_ = a.alerter.Send(ctx, a.recoveryAlert(sn, now))
 	}
 }
 
@@ -456,7 +501,7 @@ func (a *App) raiseContentAlert(ctx context.Context, m connector.Message, v dete
 			return
 		}
 	}
-	_ = a.conn.Post(ctx, a.cfg.Channels.AlertTo, formatContentAlert(m, v, kind))
+	_ = a.alerter.Send(ctx, a.contentAlert(m, v, kind))
 }
 
 func (a *App) lookupClusterState(channelID string, clusterIndex int) *clusterState {
@@ -521,7 +566,7 @@ func (a *App) checkMissingPatterns(ctx context.Context, now time.Time) {
 			a.log.Error("raise missing pattern", "err", err)
 			continue
 		}
-		_ = a.conn.Post(ctx, a.cfg.Channels.AlertTo, formatMissingPattern(st, silence))
+		_ = a.alerter.Send(ctx, a.missingPatternAlert(st, silence, now))
 	}
 }
 
@@ -547,41 +592,76 @@ func (a *App) rebuildBaselinesOnBoot(ctx context.Context) error {
 	return nil
 }
 
-func formatAlert(sn *store.Sender, d detect.Decision) string {
+// frequencyAlert builds the typed alert for a drift/offline transition.
+func (a *App) frequencyAlert(sn *store.Sender, d detect.Decision, now time.Time) alerter.Alert {
 	silence := time.Duration(d.SilentSeconds * float64(time.Second)).Round(time.Second)
-	switch d.To {
-	case store.StateDrifting:
-		return fmt.Sprintf(":warning: <@%s> drifting in <#%s> — silent for %s (baseline %s)",
-			sn.SenderID, sn.ChannelID, silence,
-			time.Duration(sn.IntervalMean*float64(time.Second)).Round(time.Second))
-	case store.StateOffline:
-		return fmt.Sprintf(":rotating_light: <@%s> offline in <#%s> — silent for %s",
-			sn.SenderID, sn.ChannelID, silence)
+	severity := alerter.SeverityWarning
+	title := fmt.Sprintf("%s drifting in %s", sn.SenderID, sn.ChannelID)
+	body := fmt.Sprintf("Silent for %s. Baseline cadence: %s.",
+		silence,
+		time.Duration(sn.IntervalMean*float64(time.Second)).Round(time.Second))
+	if d.To == store.StateOffline {
+		severity = alerter.SeverityCritical
+		title = fmt.Sprintf("%s offline in %s", sn.SenderID, sn.ChannelID)
+		body = fmt.Sprintf("Silent for %s.", silence)
 	}
-	return ""
+	return alerter.Alert{
+		Severity:  severity,
+		Title:     title,
+		Body:      body,
+		SenderID:  sn.SenderID,
+		ChannelID: sn.ChannelID,
+		Connector: a.conn.Name(),
+		Kind:      store.AlertKindFrequency,
+		RaisedAt:  now,
+	}
 }
 
-func formatRecovery(sn *store.Sender, _ detect.Decision) string {
-	return fmt.Sprintf(":white_check_mark: <@%s> back in <#%s>", sn.SenderID, sn.ChannelID)
+func (a *App) recoveryAlert(sn *store.Sender, now time.Time) alerter.Alert {
+	return alerter.Alert{
+		Severity:  alerter.SeverityInfo,
+		Title:     fmt.Sprintf("%s recovered in %s", sn.SenderID, sn.ChannelID),
+		SenderID:  sn.SenderID,
+		ChannelID: sn.ChannelID,
+		Connector: a.conn.Name(),
+		Kind:      store.AlertKindFrequency,
+		RaisedAt:  now,
+	}
 }
 
-func formatContentAlert(m connector.Message, v detect.Verdict, kind string) string {
+func (a *App) contentAlert(m connector.Message, v detect.Verdict, kind string) alerter.Alert {
+	al := alerter.Alert{
+		Severity:  alerter.SeverityWarning,
+		SenderID:  m.SenderID,
+		ChannelID: m.ChannelID,
+		Connector: a.conn.Name(),
+		Kind:      kind,
+		RaisedAt:  m.Timestamp,
+	}
 	switch kind {
 	case store.AlertKindUnknownPattern:
-		return fmt.Sprintf(":grey_question: unknown pattern in <#%s> from <@%s>: %q",
-			m.ChannelID, m.SenderID, truncate(m.Text, 200))
+		al.Title = fmt.Sprintf("Unknown pattern in %s", m.ChannelID)
+		al.Body = fmt.Sprintf("From %s: %q", m.SenderID, truncate(m.Text, 200))
 	case store.AlertKindAbnormalContent:
-		return fmt.Sprintf(":warning: abnormal content in <#%s> (cluster %d, sim %.2f) missing tokens %v: %q",
-			m.ChannelID, v.ClusterID, v.Similarity, v.MissingTokens, truncate(m.Text, 200))
+		al.Title = fmt.Sprintf("Abnormal content in %s (cluster %d)", m.ChannelID, v.ClusterID)
+		al.Body = fmt.Sprintf("Similarity %.2f, missing stable tokens %v.\nMessage: %q",
+			v.Similarity, v.MissingTokens, truncate(m.Text, 200))
 	}
-	return ""
+	return al
 }
 
-func formatMissingPattern(st *clusterState, silence time.Duration) string {
-	return fmt.Sprintf(":hourglass: cluster %d in <#%s> silent for %s (mean cadence %s)",
-		st.clusterIndex, st.channelID,
-		silence.Round(time.Second),
-		time.Duration(st.baseline.Mean()*float64(time.Second)).Round(time.Second))
+func (a *App) missingPatternAlert(st *clusterState, silence time.Duration, now time.Time) alerter.Alert {
+	return alerter.Alert{
+		Severity: alerter.SeverityCritical,
+		Title:    fmt.Sprintf("Cluster %d in %s missing", st.clusterIndex, st.channelID),
+		Body: fmt.Sprintf("Silent for %s. Mean cadence: %s.",
+			silence.Round(time.Second),
+			time.Duration(st.baseline.Mean()*float64(time.Second)).Round(time.Second)),
+		ChannelID: st.channelID,
+		Connector: a.conn.Name(),
+		Kind:      store.AlertKindMissingPattern,
+		RaisedAt:  now,
+	}
 }
 
 func truncate(s string, n int) string {
