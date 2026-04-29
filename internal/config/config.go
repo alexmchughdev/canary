@@ -119,7 +119,7 @@ func (c *Config) applyDefaults() {
 		c.Detection.HardCap = 30 * time.Minute
 	}
 	if c.Store.Path == "" {
-		c.Store.Path = "canary.db"
+		c.Store.Path = "foghorn.db"
 	}
 	if c.Metrics.Addr == "" {
 		c.Metrics.Addr = ":9090"

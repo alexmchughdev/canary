@@ -1,4 +1,4 @@
-/canary
+/foghorn
 /bin/
 *.test
 *.out
@@ -11,3 +11,5 @@
 !.env.example
 /tmp/
 /vendor/
+/plan/
+CLAUDE.md

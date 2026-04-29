@@ -1,4 +1,4 @@
-module github.com/alexmchughdev/canary
+module github.com/alexmchughdev/foghorn
 
 go 1.26
 

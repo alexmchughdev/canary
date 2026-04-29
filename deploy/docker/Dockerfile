@@ -3,14 +3,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG VERSION=dev
 RUN CGO_ENABLED=0 GOFLAGS=-trimpath \
-    go build -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /out/canary ./cmd/canary
+    go build -ldflags="-s -w" \
+    -o /out/foghorn ./cmd/foghorn
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/canary /canary
+COPY --from=build /out/foghorn /foghorn
 USER nonroot:nonroot
 EXPOSE 9090
-ENTRYPOINT ["/canary"]
-CMD ["-config", "/etc/canary/canary.yaml"]
+ENTRYPOINT ["/foghorn"]
+CMD ["-config", "/etc/foghorn/foghorn.yaml"]

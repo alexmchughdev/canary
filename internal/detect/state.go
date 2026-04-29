@@ -3,8 +3,8 @@ package detect
 import (
 	"time"
 
-	"github.com/alexmchughdev/canary/internal/config"
-	"github.com/alexmchughdev/canary/internal/store"
+	"github.com/alexmchughdev/foghorn/internal/config"
+	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
 // Params captures the numeric knobs used during detection. Kept

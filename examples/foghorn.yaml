@@ -15,7 +15,7 @@ detection:
   hard_cap: 30m
 
 store:
-  path: /var/lib/canary/canary.db
+  path: /var/lib/foghorn/foghorn.db
 
 metrics:
   addr: :9090

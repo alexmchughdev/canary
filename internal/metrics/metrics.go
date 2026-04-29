@@ -1,5 +1,5 @@
 // Package metrics exposes the Prometheus surface listed in
-// canary-plan.md §Metrics exposed. Cardinality stays bounded because
+// foghorn-plan.md §Metrics exposed. Cardinality stays bounded because
 // sender and channel IDs come from the finite configured set.
 package metrics
 
@@ -30,31 +30,31 @@ func New() *Metrics {
 	m := &Metrics{
 		reg: reg,
 		SendersTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "canary_senders_total",
+			Name: "foghorn_senders_total",
 			Help: "Number of tracked senders in each state, per channel.",
 		}, []string{"channel", "state"}),
 		LastSeenSeconds: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "canary_sender_last_seen_seconds",
+			Name: "foghorn_sender_last_seen_seconds",
 			Help: "Unix timestamp of the most recent message from each sender.",
 		}, []string{"sender", "channel"}),
 		Transitions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "canary_state_transitions_total",
+			Name: "foghorn_state_transitions_total",
 			Help: "State transitions per sender.",
 		}, []string{"sender", "from_state", "to_state"}),
 		AlertsRaised: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "canary_alerts_raised_total",
+			Name: "foghorn_alerts_raised_total",
 			Help: "Alerts raised per sender and state.",
 		}, []string{"sender", "state"}),
 		MessagesIngested: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "canary_messages_ingested_total",
+			Name: "foghorn_messages_ingested_total",
 			Help: "Heartbeat messages ingested per channel.",
 		}, []string{"channel"}),
 		SlackDisconnects: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "canary_slack_disconnects_total",
+			Name: "foghorn_slack_disconnects_total",
 			Help: "Socket Mode disconnect events observed.",
 		}),
 		BaselineReady: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "canary_baseline_ready",
+			Name: "foghorn_baseline_ready",
 			Help: "1 if the baseline for a sender has crossed the learning threshold, else 0.",
 		}, []string{"sender", "channel"}),
 	}

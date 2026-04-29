@@ -1,17 +1,17 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: canary
+  name: foghorn
   namespace: argocd
 spec:
   project: default
   source:
-    repoURL: https://github.com/alexmchughdev/canary.git
+    repoURL: https://github.com/alexmchughdev/foghorn.git
     targetRevision: main
     path: deploy/k8s
   destination:
     server: https://kubernetes.default.svc
-    namespace: canary
+    namespace: foghorn
   syncPolicy:
     automated:
       prune: true

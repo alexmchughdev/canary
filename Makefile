@@ -1,5 +1,5 @@
-BIN := canary
-PKG := ./cmd/canary
+BIN := foghorn
+PKG := ./cmd/foghorn
 
 .PHONY: build test vet lint tidy run clean
 
@@ -16,7 +16,7 @@ tidy:
 	go mod tidy
 
 run: build
-	./$(BIN) -config examples/canary.yaml
+	./$(BIN) -config examples/foghorn.yaml
 
 clean:
 	rm -f $(BIN)

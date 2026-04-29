@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: canary-config
-  namespace: canary
+  name: foghorn-config
+  namespace: foghorn
 data:
-  canary.yaml: |
+  foghorn.yaml: |
     slack:
       app_token_env: SLACK_APP_TOKEN
       bot_token_env: SLACK_BOT_TOKEN
@@ -22,7 +22,7 @@ data:
       hard_cap: 30m
 
     store:
-      path: /var/lib/canary/canary.db
+      path: /var/lib/foghorn/foghorn.db
 
     metrics:
       addr: :9090

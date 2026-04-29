@@ -1,5 +1,5 @@
 // Package detect holds the rolling-interval baseline and the per-sender
-// state machine described in canary-plan.md §Detection model. All math
+// state machine described in foghorn-plan.md §Detection model. All math
 // is plain Go float64 — deliberately no stats lib, so the invariants
 // stay readable and the package has zero external deps.
 package detect

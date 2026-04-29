@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexmchughdev/canary/internal/store"
+	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
 func defaultParams() Params {

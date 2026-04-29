@@ -1,27 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: canary
-  namespace: canary
+  name: foghorn
+  namespace: foghorn
   labels:
-    app.kubernetes.io/name: canary
+    app.kubernetes.io/name: foghorn
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: canary
+      app.kubernetes.io/name: foghorn
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: canary
+        app.kubernetes.io/name: foghorn
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/path: /metrics
     spec:
-      serviceAccountName: canary
+      serviceAccountName: foghorn
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -29,22 +29,22 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: canary
-          image: ghcr.io/alexmchughdev/canary:latest
+        - name: foghorn
+          image: ghcr.io/alexmchughdev/foghorn:latest
           imagePullPolicy: IfNotPresent
-          args: ["-config", "/etc/canary/canary.yaml"]
+          args: ["-config", "/etc/foghorn/foghorn.yaml"]
           ports:
             - name: metrics
               containerPort: 9090
           envFrom:
             - secretRef:
-                name: canary-slack
+                name: foghorn-slack
           volumeMounts:
             - name: config
-              mountPath: /etc/canary
+              mountPath: /etc/foghorn
               readOnly: true
             - name: data
-              mountPath: /var/lib/canary
+              mountPath: /var/lib/foghorn
           livenessProbe:
             httpGet:
               path: /healthz
@@ -72,7 +72,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: canary-config
+            name: foghorn-config
         - name: data
           persistentVolumeClaim:
-            claimName: canary-data
+            claimName: foghorn-data

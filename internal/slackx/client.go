@@ -1,5 +1,5 @@
 // Package slackx wraps slack-go's Socket Mode client with the narrow
-// surface Canary needs: stream channel messages as Event values, post
+// surface Foghorn needs: stream channel messages as Event values, post
 // alerts to the configured channel, auto-reconnect under the hood.
 package slackx
 
@@ -14,7 +14,7 @@ import (
 	"github.com/slack-go/slack/socketmode"
 )
 
-// Event is the metadata-only view of a Slack message that Canary
+// Event is the metadata-only view of a Slack message that Foghorn
 // ingests. No text/blocks/attachments — the security posture in the
 // plan forbids persisting content, so we deliberately don't plumb it.
 type Event struct {

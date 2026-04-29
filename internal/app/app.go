@@ -1,5 +1,5 @@
 // Package app composes config + store + detect + slackx + metrics into
-// the running Canary. Kept out of cmd/canary so main.go stays a thin
+// the running Foghorn. Kept out of cmd/foghorn so main.go stays a thin
 // entrypoint and the wiring is testable in isolation.
 package app
 
@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alexmchughdev/canary/internal/config"
-	"github.com/alexmchughdev/canary/internal/detect"
-	"github.com/alexmchughdev/canary/internal/metrics"
-	"github.com/alexmchughdev/canary/internal/slackx"
-	"github.com/alexmchughdev/canary/internal/store"
+	"github.com/alexmchughdev/foghorn/internal/config"
+	"github.com/alexmchughdev/foghorn/internal/detect"
+	"github.com/alexmchughdev/foghorn/internal/metrics"
+	"github.com/alexmchughdev/foghorn/internal/slackx"
+	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
 const tickInterval = 30 * time.Second

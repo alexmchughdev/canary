@@ -35,7 +35,7 @@ senders:
 
 func writeTmp(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "canary.yaml")
+	p := filepath.Join(t.TempDir(), "foghorn.yaml")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

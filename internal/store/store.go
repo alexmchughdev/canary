@@ -1,5 +1,5 @@
 // Package store persists sender baselines and in-flight alerts so
-// Canary can survive restarts without losing learned cadence or double-
+// Foghorn can survive restarts without losing learned cadence or double-
 // firing alerts on recovery.
 package store
 
