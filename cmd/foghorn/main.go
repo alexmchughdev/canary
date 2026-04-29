@@ -12,8 +12,8 @@ import (
 
 	"github.com/alexmchughdev/foghorn/internal/app"
 	"github.com/alexmchughdev/foghorn/internal/config"
+	slackconn "github.com/alexmchughdev/foghorn/internal/connector/slack"
 	"github.com/alexmchughdev/foghorn/internal/metrics"
-	"github.com/alexmchughdev/foghorn/internal/slackx"
 	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
@@ -47,16 +47,17 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	sc, err := slackx.New(slackx.Options{
+	sc, err := slackconn.New(slackconn.Options{
+		Name:     "slack",
 		AppToken: appToken,
 		BotToken: botToken,
 		Monitor:  cfg.MonitoredChannels(),
-		AlertTo:  cfg.Channels.AlertTo,
 		Logger:   log,
 	})
 	if err != nil {
 		return err
 	}
+	defer func() { _ = sc.Close() }()
 
 	m := metrics.New()
 	a := app.New(cfg, st, sc, m, log)

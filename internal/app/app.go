@@ -1,4 +1,4 @@
-// Package app composes config + store + detect + slackx + metrics into
+// Package app composes config + store + detect + connector + metrics into
 // the running Foghorn. Kept out of cmd/foghorn so main.go stays a thin
 // entrypoint and the wiring is testable in isolation.
 package app
@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/alexmchughdev/foghorn/internal/config"
+	"github.com/alexmchughdev/foghorn/internal/connector"
 	"github.com/alexmchughdev/foghorn/internal/detect"
 	"github.com/alexmchughdev/foghorn/internal/metrics"
-	"github.com/alexmchughdev/foghorn/internal/slackx"
 	"github.com/alexmchughdev/foghorn/internal/store"
 )
 
@@ -22,7 +22,7 @@ const tickInterval = 30 * time.Second
 type App struct {
 	cfg    *config.Config
 	store  store.Store
-	slack  *slackx.Client
+	conn   connector.Connector
 	mets   *metrics.Metrics
 	log    *slog.Logger
 	params detect.Params
@@ -31,11 +31,11 @@ type App struct {
 	baselines map[string]*detect.Baseline // key = sender|channel
 }
 
-func New(cfg *config.Config, st store.Store, sc *slackx.Client, m *metrics.Metrics, log *slog.Logger) *App {
+func New(cfg *config.Config, st store.Store, c connector.Connector, m *metrics.Metrics, log *slog.Logger) *App {
 	return &App{
 		cfg:       cfg,
 		store:     st,
-		slack:     sc,
+		conn:      c,
 		mets:      m,
 		log:       log,
 		params:    detect.FromConfig(cfg.Detection),
@@ -44,13 +44,13 @@ func New(cfg *config.Config, st store.Store, sc *slackx.Client, m *metrics.Metri
 }
 
 // Run blocks until ctx is cancelled. Owns four cooperating goroutines:
-// metrics server, slack socket stream, ticker, ingest consumer.
+// metrics server, connector stream, ticker, ingest consumer.
 func (a *App) Run(ctx context.Context) error {
 	if err := a.rebuildBaselinesOnBoot(ctx); err != nil {
 		return fmt.Errorf("resume: %w", err)
 	}
 
-	events := make(chan slackx.Event, 256)
+	messages := make(chan connector.Message, 256)
 
 	errCh := make(chan error, 3)
 	var wg sync.WaitGroup
@@ -64,13 +64,13 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 	go func() {
 		defer wg.Done()
-		if err := a.slack.Run(ctx, events); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("slack: %w", err)
+		if err := a.conn.Stream(ctx, messages); err != nil && ctx.Err() == nil {
+			errCh <- fmt.Errorf("connector: %w", err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		a.loop(ctx, events)
+		a.loop(ctx, messages)
 	}()
 
 	select {
@@ -82,15 +82,15 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) loop(ctx context.Context, events <-chan slackx.Event) {
+func (a *App) loop(ctx context.Context, messages <-chan connector.Message) {
 	tick := time.NewTicker(tickInterval)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case e := <-events:
-			a.onMessage(ctx, e)
+		case m := <-messages:
+			a.onMessage(ctx, m)
 		case now := <-tick.C:
 			a.onTick(ctx, now)
 		}
@@ -123,33 +123,33 @@ func senderKey(senderID, channelID string) string {
 	return senderID + "|" + channelID
 }
 
-func (a *App) onMessage(ctx context.Context, e slackx.Event) {
-	a.mets.MessagesIngested.WithLabelValues(e.ChannelID).Inc()
+func (a *App) onMessage(ctx context.Context, m connector.Message) {
+	a.mets.MessagesIngested.WithLabelValues(m.ChannelID).Inc()
 
-	key := senderKey(e.SenderID, e.ChannelID)
+	key := senderKey(m.SenderID, m.ChannelID)
 	b := a.baselineFor(key)
 
-	sn, err := a.store.GetSender(ctx, e.SenderID, e.ChannelID)
+	sn, err := a.store.GetSender(ctx, m.SenderID, m.ChannelID)
 	if err != nil {
 		a.log.Error("get sender", "err", err)
 		return
 	}
 	if sn == nil {
 		sn = &store.Sender{
-			SenderID:       e.SenderID,
-			ChannelID:      e.ChannelID,
+			SenderID:       m.SenderID,
+			ChannelID:      m.ChannelID,
 			State:          store.StateLearning,
-			StateEnteredAt: e.Timestamp,
+			StateEnteredAt: m.Timestamp,
 		}
 	}
 
-	d := detect.OnMessage(sn, b, e.Timestamp, a.override(e.SenderID), a.params)
+	d := detect.OnMessage(sn, b, m.Timestamp, a.override(m.SenderID), a.params)
 	if err := a.store.UpsertSender(ctx, sn); err != nil {
 		a.log.Error("upsert sender", "err", err)
 		return
 	}
 	a.reflectMetrics(sn)
-	a.applyDecision(ctx, sn, d, e.Timestamp)
+	a.applyDecision(ctx, sn, d, m.Timestamp)
 }
 
 func (a *App) onTick(ctx context.Context, now time.Time) {
@@ -172,7 +172,7 @@ func (a *App) onTick(ctx context.Context, now time.Time) {
 	}
 }
 
-// applyDecision turns a state transition into Slack + DB side-effects.
+// applyDecision turns a state transition into connector + DB side-effects.
 // The alert-raise/clear split is what gives us dedup across restarts:
 // RaiseAlert is skipped when there's already an open alert, and
 // ClearOpenAlerts is idempotent.
@@ -199,10 +199,10 @@ func (a *App) applyDecision(ctx context.Context, sn *store.Sender, d detect.Deci
 			return
 		}
 		a.mets.AlertsRaised.WithLabelValues(sn.SenderID, string(d.To)).Inc()
-		_ = a.slack.PostAlert(ctx, formatAlert(sn, d))
+		_ = a.conn.Post(ctx, a.cfg.Channels.AlertTo, formatAlert(sn, d))
 	case store.StateRecovering:
 		_ = a.store.ClearOpenAlerts(ctx, sn.SenderID, sn.ChannelID, now)
-		_ = a.slack.PostAlert(ctx, formatRecovery(sn, d))
+		_ = a.conn.Post(ctx, a.cfg.Channels.AlertTo, formatRecovery(sn, d))
 	}
 }
 

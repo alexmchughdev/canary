@@ -13,11 +13,12 @@ See [foghorn-plan.md](foghorn-plan.md) for the full design doc. Note: the plan l
 
 ## Layout
 
-    cmd/foghorn/       main binary
-    internal/config/   YAML config loader
-    internal/store/    SQLite persistence
-    internal/detect/   rolling baseline + state machine
-    internal/slackx/   Slack Socket Mode wrapper
-    internal/metrics/  Prometheus /metrics
-    deploy/            Dockerfile, K8s manifests, ArgoCD app
-    examples/          sample foghorn.yaml
+    cmd/foghorn/                 main binary
+    internal/config/             YAML config loader
+    internal/store/              SQLite persistence
+    internal/detect/             rolling baseline + state machine
+    internal/connector/          Connector interface
+      slack/                     Slack Socket Mode implementation
+    internal/metrics/            Prometheus /metrics
+    deploy/                      Dockerfile, K8s manifests, ArgoCD app
+    examples/                    sample foghorn.yaml
