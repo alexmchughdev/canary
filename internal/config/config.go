@@ -403,6 +403,9 @@ func (c *Config) MigrateAlertTo(log *slog.Logger) {
 
 // Tokens resolves Slack tokens from the configured env vars. Errors if
 // either is unset so startup fails fast rather than at first handshake.
+//
+// Deprecated: use ConnectorConfig.Tokens() on a specific connector
+// entry instead. Kept only for the legacy slack: shim path.
 func (c *Config) Tokens() (app, bot string, err error) {
 	app = os.Getenv(c.Slack.AppTokenEnv)
 	bot = os.Getenv(c.Slack.BotTokenEnv)
