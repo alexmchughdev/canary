@@ -1,12 +1,11 @@
-slack:
-  app_token_env: SLACK_APP_TOKEN
-  bot_token_env: SLACK_BOT_TOKEN
-
-channels:
-  monitor:
-    - C01234ABCD
-    - C01234EFGH
-  alert_to: C01234IJKL
+connectors:
+  - name: prod-slack
+    type: slack
+    app_token_env: SLACK_APP_TOKEN
+    bot_token_env: SLACK_BOT_TOKEN
+    monitor:
+      - C01234ABCD
+      - C01234EFGH
 
 detection:
   learning_messages: 20

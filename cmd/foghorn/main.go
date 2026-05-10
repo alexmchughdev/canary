@@ -12,7 +12,6 @@ import (
 
 	"github.com/alexmchughdev/foghorn/internal/app"
 	"github.com/alexmchughdev/foghorn/internal/config"
-	slackconn "github.com/alexmchughdev/foghorn/internal/connector/slack"
 	"github.com/alexmchughdev/foghorn/internal/metrics"
 	"github.com/alexmchughdev/foghorn/internal/store"
 )
@@ -33,11 +32,8 @@ func run(cfgPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	cfg.MigrateLegacySlack(log)
 	cfg.MigrateAlertTo(log)
-	appToken, botToken, err := cfg.Tokens()
-	if err != nil {
-		return fmt.Errorf("tokens: %w", err)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -48,17 +44,15 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	sc, err := slackconn.New(slackconn.Options{
-		Name:     "slack",
-		AppToken: appToken,
-		BotToken: botToken,
-		Monitor:  cfg.MonitoredChannels(),
-		Logger:   log,
-	})
+	conns, err := app.BuildConnectors(cfg, log)
 	if err != nil {
-		return err
+		return fmt.Errorf("connectors: %w", err)
 	}
-	defer func() { _ = sc.Close() }()
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
 
 	multi, err := app.BuildAlerter(cfg, log)
 	if err != nil {
@@ -66,10 +60,10 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 
 	m := metrics.New()
-	a := app.New(cfg, st, sc, multi, m, log)
+	a := app.New(cfg, st, conns, multi, m, log)
 
 	log.Info("foghorn starting",
-		"channels", len(cfg.Channels.Monitor),
+		"connectors", len(cfg.Connectors),
 		"alerters", len(cfg.Alerters),
 		"metrics", cfg.Metrics.Addr)
 

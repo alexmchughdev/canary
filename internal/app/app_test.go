@@ -61,7 +61,7 @@ func newAppForTest(t *testing.T, conn connector.Connector) *App {
 
 	m := metrics.New()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(cfg, st, conn, fakeAlerter{}, m, log)
+	return New(cfg, st, []connector.Connector{conn}, fakeAlerter{}, m, log)
 }
 
 // TestWatermark_skipsBackfillOverlap covers the central failure mode

@@ -68,7 +68,7 @@ const tickInterval = 30 * time.Second
 type App struct {
 	cfg     *config.Config
 	store   store.Store
-	conn    connector.Connector
+	conns   []connector.Connector
 	alerter alerter.Alerter
 	mets    *metrics.Metrics
 	log     *slog.Logger
@@ -106,11 +106,11 @@ type clusterState struct {
 	lastSeen     time.Time
 }
 
-func New(cfg *config.Config, st store.Store, c connector.Connector, a alerter.Alerter, m *metrics.Metrics, log *slog.Logger) *App {
+func New(cfg *config.Config, st store.Store, conns []connector.Connector, a alerter.Alerter, m *metrics.Metrics, log *slog.Logger) *App {
 	return &App{
 		cfg:              cfg,
 		store:            st,
-		conn:             c,
+		conns:            conns,
 		alerter:          a,
 		mets:             m,
 		log:              log,
@@ -146,9 +146,11 @@ func (a *App) Run(ctx context.Context) error {
 
 	messages := make(chan connector.Message, 256)
 
-	errCh := make(chan error, 4)
+	// metrics + loop + api + one per connector
+	goroutines := 3 + len(a.conns)
+	errCh := make(chan error, goroutines)
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(goroutines)
 
 	go func() {
 		defer wg.Done()
@@ -156,12 +158,15 @@ func (a *App) Run(ctx context.Context) error {
 			errCh <- fmt.Errorf("metrics: %w", err)
 		}
 	}()
-	go func() {
-		defer wg.Done()
-		if err := a.conn.Stream(ctx, messages); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("connector: %w", err)
-		}
-	}()
+	for _, c := range a.conns {
+		c := c
+		go func() {
+			defer wg.Done()
+			if err := c.Stream(ctx, messages); err != nil && ctx.Err() == nil {
+				errCh <- fmt.Errorf("connector %s: %w", c.Name(), err)
+			}
+		}()
+	}
 	go func() {
 		defer wg.Done()
 		a.loop(ctx, messages)
@@ -359,7 +364,7 @@ func (a *App) reflectMetrics(sn *store.Sender) {
 // over the same corpus.
 func (a *App) backfillHistory(ctx context.Context) error {
 	since := time.Now().Add(-a.cfg.Learning.Lookback)
-	for _, c := range []connector.Connector{a.conn} {
+	for _, c := range a.conns {
 		msgs, err := c.History(ctx, since)
 		if err != nil {
 			return fmt.Errorf("connector %s: %w", c.Name(), err)
@@ -477,8 +482,12 @@ func (a *App) RelearnChannel(ctx context.Context, channelID string) error {
 		return fmt.Errorf("channel %s is not monitored", channelID)
 	}
 
+	conn := a.connectorForChannel(channelID)
+	if conn == nil {
+		return fmt.Errorf("channel %s has no live connector", channelID)
+	}
 	since := time.Now().Add(-a.cfg.Learning.Lookback)
-	all, err := a.conn.History(ctx, since)
+	all, err := conn.History(ctx, since)
 	if err != nil {
 		return fmt.Errorf("history: %w", err)
 	}
@@ -710,6 +719,29 @@ func (a *App) rebuildBaselinesOnBoot(ctx context.Context) error {
 	return nil
 }
 
+// connectorForChannel returns the connector that monitors channelID,
+// or nil if no configured connector matches. Multiple connectors
+// monitoring the same channel isn't a supported topology; the first
+// match wins.
+func (a *App) connectorForChannel(channelID string) connector.Connector {
+	name := a.cfg.ConnectorForChannel(channelID)
+	if name == "" {
+		return nil
+	}
+	for _, c := range a.conns {
+		if c.Name() == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// connectorNameForChannel returns the configured connector name that
+// owns channelID, or "" if no match. Used to stamp outbound alerts.
+func (a *App) connectorNameForChannel(channelID string) string {
+	return a.cfg.ConnectorForChannel(channelID)
+}
+
 // frequencyAlert builds the typed alert for a drift/offline transition.
 func (a *App) frequencyAlert(sn *store.Sender, d detect.Decision, now time.Time) alerter.Alert {
 	silence := time.Duration(d.SilentSeconds * float64(time.Second)).Round(time.Second)
@@ -729,7 +761,7 @@ func (a *App) frequencyAlert(sn *store.Sender, d detect.Decision, now time.Time)
 		Body:      body,
 		SenderID:  sn.SenderID,
 		ChannelID: sn.ChannelID,
-		Connector: a.conn.Name(),
+		Connector: a.connectorNameForChannel(sn.ChannelID),
 		Kind:      store.AlertKindFrequency,
 		RaisedAt:  now,
 	}
@@ -741,7 +773,7 @@ func (a *App) recoveryAlert(sn *store.Sender, now time.Time) alerter.Alert {
 		Title:     fmt.Sprintf("%s recovered in %s", sn.SenderID, sn.ChannelID),
 		SenderID:  sn.SenderID,
 		ChannelID: sn.ChannelID,
-		Connector: a.conn.Name(),
+		Connector: a.connectorNameForChannel(sn.ChannelID),
 		Kind:      store.AlertKindFrequency,
 		RaisedAt:  now,
 	}
@@ -752,7 +784,7 @@ func (a *App) contentAlert(m connector.Message, v detect.Verdict, kind string) a
 		Severity:  alerter.SeverityWarning,
 		SenderID:  m.SenderID,
 		ChannelID: m.ChannelID,
-		Connector: a.conn.Name(),
+		Connector: m.Connector,
 		Kind:      kind,
 		RaisedAt:  m.Timestamp,
 	}
@@ -776,7 +808,7 @@ func (a *App) missingPatternAlert(st *clusterState, silence time.Duration, now t
 			silence.Round(time.Second),
 			time.Duration(st.baseline.Mean()*float64(time.Second)).Round(time.Second)),
 		ChannelID: st.channelID,
-		Connector: a.conn.Name(),
+		Connector: a.connectorNameForChannel(st.channelID),
 		Kind:      store.AlertKindMissingPattern,
 		RaisedAt:  now,
 	}
