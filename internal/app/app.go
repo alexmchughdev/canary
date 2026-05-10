@@ -90,6 +90,12 @@ type App struct {
 	// historyByChannel buffers backfilled messages per channel during
 	// boot so the learn-phase clustering pass can read them.
 	historyByChannel map[string][]connector.Message
+	// watermark[channelID] is the highest Slack timestamp returned by
+	// the boot-time History scan on that channel. Live-stream messages
+	// with ts <= watermark are dropped before any state mutation:
+	// Socket Mode redelivers buffered events on reconnect, so the same
+	// message can arrive via both History and Stream within one boot.
+	watermark map[string]time.Time
 }
 
 type clusterState struct {
@@ -114,6 +120,7 @@ func New(cfg *config.Config, st store.Store, c connector.Connector, a alerter.Al
 		clusterStates:    make(map[string]*clusterState),
 		cooldownUntil:    make(map[string]time.Time),
 		historyByChannel: make(map[string][]connector.Message),
+		watermark:        make(map[string]time.Time),
 	}
 }
 
@@ -185,11 +192,35 @@ func (a *App) loop(ctx context.Context, messages <-chan connector.Message) {
 		case <-ctx.Done():
 			return
 		case m := <-messages:
+			if a.shouldSkipLive(m) {
+				a.mets.MessagesSkipped.WithLabelValues(m.ChannelID, "backfill_overlap").Inc()
+				a.log.Debug("skip pre-watermark live message",
+					"channel", m.ChannelID, "ts", m.Timestamp)
+				continue
+			}
 			a.onMessage(ctx, m)
 		case now := <-tick.C:
 			a.onTick(ctx, now)
 		}
 	}
+}
+
+// shouldSkipLive returns true when the live-stream message has a
+// timestamp at or before the channel's backfill watermark. Slack's
+// Socket Mode redelivers events buffered while the bot was offline,
+// so messages already covered by History can arrive a second time via
+// Stream. Re-ingesting them would inflate sender msg_counts, double-
+// classify, and (worst) bias cluster cadence baselines toward whatever
+// rate Slack happens to replay at. The check is strict <=: timestamps
+// equal to the watermark are the exact backfilled messages.
+func (a *App) shouldSkipLive(m connector.Message) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	w, ok := a.watermark[m.ChannelID]
+	if !ok {
+		return false
+	}
+	return !m.Timestamp.After(w)
 }
 
 func (a *App) baselineFor(key string) *detect.Baseline {
@@ -341,6 +372,9 @@ func (a *App) backfillHistory(ctx context.Context) error {
 			}
 			a.historyByChannel[m.ChannelID] = append(a.historyByChannel[m.ChannelID], m)
 			a.onMessage(ctx, m)
+			if w, ok := a.watermark[m.ChannelID]; !ok || m.Timestamp.After(w) {
+				a.watermark[m.ChannelID] = m.Timestamp
+			}
 		}
 	}
 	return nil

@@ -21,6 +21,7 @@ type Metrics struct {
 	SlackDisconnects   prometheus.Counter
 	BaselineReady      *prometheus.GaugeVec   // {sender, channel}
 	MessagesClassified *prometheus.CounterVec // {channel, cluster_id, status}
+	MessagesSkipped    *prometheus.CounterVec // {channel, reason}
 	ClustersTotal      *prometheus.GaugeVec   // {channel}
 
 	reg *prometheus.Registry
@@ -62,6 +63,10 @@ func New() *Metrics {
 			Name: "foghorn_messages_classified_total",
 			Help: "Live messages classified against learned cluster fingerprints.",
 		}, []string{"channel", "cluster_id", "status"}),
+		MessagesSkipped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "foghorn_messages_skipped_total",
+			Help: "Live messages skipped before ingestion. Reason labels: backfill_overlap.",
+		}, []string{"channel", "reason"}),
 		ClustersTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "foghorn_clusters_total",
 			Help: "Number of learned content clusters per channel.",
@@ -70,7 +75,7 @@ func New() *Metrics {
 	reg.MustRegister(
 		m.SendersTotal, m.LastSeenSeconds, m.Transitions,
 		m.AlertsRaised, m.MessagesIngested, m.SlackDisconnects, m.BaselineReady,
-		m.MessagesClassified, m.ClustersTotal,
+		m.MessagesClassified, m.MessagesSkipped, m.ClustersTotal,
 	)
 	return m
 }
