@@ -50,4 +50,8 @@ store:
 metrics:
   addr: :9090
 
+api:
+  addr: :8080
+  token_env: FOGHORN_API_TOKEN
+
 senders: {}

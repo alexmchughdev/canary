@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/alexmchughdev/foghorn/internal/alerter"
 	emailalerter "github.com/alexmchughdev/foghorn/internal/alerter/email"
 	slackalerter "github.com/alexmchughdev/foghorn/internal/alerter/slack"
+	"github.com/alexmchughdev/foghorn/internal/api"
 	"github.com/alexmchughdev/foghorn/internal/cluster"
 	"github.com/alexmchughdev/foghorn/internal/config"
 	"github.com/alexmchughdev/foghorn/internal/connector"
@@ -117,7 +119,7 @@ func New(cfg *config.Config, st store.Store, c connector.Connector, a alerter.Al
 
 // Run blocks until ctx is cancelled. It boots state, backfills history,
 // learns content clusters, then runs the metrics server, connector
-// stream, and ingest/tick loop as cooperating goroutines.
+// stream, ingest/tick loop, and HTTP API as cooperating goroutines.
 func (a *App) Run(ctx context.Context) error {
 	if err := a.rebuildBaselinesOnBoot(ctx); err != nil {
 		return fmt.Errorf("resume: %w", err)
@@ -129,11 +131,17 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("learn clusters: %w", err)
 	}
 
+	apiToken, err := a.cfg.APIToken()
+	if err != nil {
+		return fmt.Errorf("api token: %w", err)
+	}
+	apiSrv := api.New(a.store, a.RelearnChannel, a.cfg.API.Addr, apiToken, api.BuildSHA())
+
 	messages := make(chan connector.Message, 256)
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 
 	go func() {
 		defer wg.Done()
@@ -151,6 +159,14 @@ func (a *App) Run(ctx context.Context) error {
 		defer wg.Done()
 		a.loop(ctx, messages)
 	}()
+	go func() {
+		defer wg.Done()
+		if err := apiSrv.Serve(ctx); err != nil && ctx.Err() == nil {
+			errCh <- fmt.Errorf("api: %w", err)
+		}
+	}()
+
+	a.log.Info("api listening", "addr", a.cfg.API.Addr)
 
 	select {
 	case <-ctx.Done():
@@ -335,60 +351,128 @@ func (a *App) backfillHistory(ctx context.Context) error {
 // cluster cadence baselines. After this returns, the channel's
 // classifier is non-nil and live messages will be classified.
 func (a *App) learnClusters(ctx context.Context) error {
-	opts := cluster.BuildOptions{
-		Epsilon: a.cfg.Cluster.Epsilon,
-		MinPts:  a.cfg.Cluster.MinPts,
-	}
 	for channelID, msgs := range a.historyByChannel {
-		texts := make([]string, 0, len(msgs))
-		kept := make([]connector.Message, 0, len(msgs))
-		for _, m := range msgs {
-			if m.Text == "" {
-				continue
-			}
-			texts = append(texts, m.Text)
-			kept = append(kept, m)
+		if err := a.buildAndInstallClusters(ctx, channelID, msgs); err != nil {
+			return err
 		}
-		clusters, vec := cluster.BuildWithVectoriser(texts, opts)
-
-		fps := make([]cluster.Fingerprint, len(clusters))
-		for i, c := range clusters {
-			fps[i] = c.Fingerprint
-		}
-		a.classifiers[channelID] = detect.NewClassifier(fps, vec, detect.ClassifierOptions{
-			Threshold:   a.cfg.Cluster.MatchThreshold,
-			StableRatio: a.cfg.Cluster.StableRatio,
-		})
-		a.mets.ClustersTotal.WithLabelValues(channelID).Set(float64(len(clusters)))
-
-		for _, c := range clusters {
-			st := seedClusterState(c, kept)
-			st.channelID = channelID
-			st.clusterIndex = c.ID
-			rec := &store.Cluster{
-				ChannelID:      channelID,
-				ClusterIndex:   c.ID,
-				Size:           c.Size,
-				SampleMessage:  c.SampleMessage,
-				Centroid:       c.Centroid,
-				StableTokens:   c.StableTokens,
-				LastMessageAt:  zeroOrPtr(st.lastSeen),
-				IntervalMean:   st.baseline.Mean(),
-				IntervalStddev: st.baseline.Stddev(),
-			}
-			if err := a.store.UpsertCluster(ctx, rec); err != nil {
-				return fmt.Errorf("upsert cluster %s/%d: %w", channelID, c.ID, err)
-			}
-			st.dbID = rec.ID
-			a.clusterStates[clusterKey(channelID, c.ID)] = st
-		}
-
-		a.log.Info("clusters learned",
-			"channel", channelID, "messages", len(texts), "clusters", len(clusters))
 	}
 	// Free the backfill buffer once learning is done.
 	a.historyByChannel = nil
 	return nil
+}
+
+// buildAndInstallClusters runs the cluster pipeline for one channel:
+// vectorise, DBSCAN, persist to the store, then atomically install the
+// classifier and per-cluster state. Used by both the boot-time learn
+// pass and the on-demand /relearn API.
+func (a *App) buildAndInstallClusters(ctx context.Context, channelID string, msgs []connector.Message) error {
+	opts := cluster.BuildOptions{
+		Epsilon: a.cfg.Cluster.Epsilon,
+		MinPts:  a.cfg.Cluster.MinPts,
+	}
+	texts := make([]string, 0, len(msgs))
+	kept := make([]connector.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Text == "" {
+			continue
+		}
+		texts = append(texts, m.Text)
+		kept = append(kept, m)
+	}
+	clusters, vec := cluster.BuildWithVectoriser(texts, opts)
+
+	fps := make([]cluster.Fingerprint, len(clusters))
+	for i, c := range clusters {
+		fps[i] = c.Fingerprint
+	}
+	classifier := detect.NewClassifier(fps, vec, detect.ClassifierOptions{
+		Threshold:   a.cfg.Cluster.MatchThreshold,
+		StableRatio: a.cfg.Cluster.StableRatio,
+	})
+
+	// Persist new cluster rows first so we have assigned DB IDs to attach
+	// to the in-memory state.
+	newStates := make(map[string]*clusterState, len(clusters))
+	for _, c := range clusters {
+		st := seedClusterState(c, kept)
+		st.channelID = channelID
+		st.clusterIndex = c.ID
+		rec := &store.Cluster{
+			ChannelID:      channelID,
+			ClusterIndex:   c.ID,
+			Size:           c.Size,
+			SampleMessage:  c.SampleMessage,
+			Centroid:       c.Centroid,
+			StableTokens:   c.StableTokens,
+			LastMessageAt:  zeroOrPtr(st.lastSeen),
+			IntervalMean:   st.baseline.Mean(),
+			IntervalStddev: st.baseline.Stddev(),
+		}
+		if err := a.store.UpsertCluster(ctx, rec); err != nil {
+			return fmt.Errorf("upsert cluster %s/%d: %w", channelID, c.ID, err)
+		}
+		st.dbID = rec.ID
+		newStates[clusterKey(channelID, c.ID)] = st
+	}
+
+	a.mu.Lock()
+	a.classifiers[channelID] = classifier
+	for k, st := range a.clusterStates {
+		if st.channelID == channelID {
+			delete(a.clusterStates, k)
+		}
+	}
+	for k, st := range newStates {
+		a.clusterStates[k] = st
+	}
+	a.mu.Unlock()
+
+	a.mets.ClustersTotal.WithLabelValues(channelID).Set(float64(len(clusters)))
+	a.log.Info("clusters learned",
+		"channel", channelID, "messages", len(texts), "clusters", len(clusters))
+	return nil
+}
+
+// RelearnChannel drops the persisted clusters for one channel, pulls
+// the current lookback of history from the connector, and rebuilds the
+// classifier in place. Open cluster alerts on the channel are cleared
+// since their cluster_id rows are about to vanish. Senders and
+// frequency alerts are untouched.
+func (a *App) RelearnChannel(ctx context.Context, channelID string) error {
+	if _, ok := a.cfg.MonitoredChannels()[channelID]; !ok {
+		return fmt.Errorf("channel %s is not monitored", channelID)
+	}
+
+	since := time.Now().Add(-a.cfg.Learning.Lookback)
+	all, err := a.conn.History(ctx, since)
+	if err != nil {
+		return fmt.Errorf("history: %w", err)
+	}
+	msgs := make([]connector.Message, 0, len(all))
+	for _, m := range all {
+		if m.ChannelID == channelID {
+			msgs = append(msgs, m)
+		}
+	}
+
+	now := time.Now()
+	if err := a.store.ClearOpenClusterAlertsByChannel(ctx, channelID, now); err != nil {
+		return fmt.Errorf("clear cluster alerts: %w", err)
+	}
+	if err := a.store.DeleteClustersByChannel(ctx, channelID); err != nil {
+		return fmt.Errorf("delete clusters: %w", err)
+	}
+
+	a.mu.Lock()
+	for k := range a.cooldownUntil {
+		if strings.HasPrefix(k, channelID+":") {
+			delete(a.cooldownUntil, k)
+		}
+	}
+	a.mu.Unlock()
+
+	a.log.Info("relearn requested", "channel", channelID, "messages", len(msgs))
+	return a.buildAndInstallClusters(ctx, channelID, msgs)
 }
 
 // seedClusterState walks the cluster's members in chronological order
