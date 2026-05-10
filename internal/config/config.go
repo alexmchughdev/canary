@@ -20,7 +20,16 @@ type Config struct {
 	Alerters  []AlerterConfig      `yaml:"alerters"`
 	Store     StoreConfig          `yaml:"store"`
 	Metrics   MetricsConfig        `yaml:"metrics"`
+	API       APIConfig            `yaml:"api"`
 	Senders   map[string]SenderCfg `yaml:"senders"`
+}
+
+// APIConfig configures the HTTP API server. Addr is the listen address
+// on a separate port from metrics. TokenEnv names the env var that
+// holds the bearer token; if unset at startup the API will not start.
+type APIConfig struct {
+	Addr     string `yaml:"addr"`
+	TokenEnv string `yaml:"token_env"`
 }
 
 // AlerterConfig describes one alert sink. Type discriminates which
@@ -217,6 +226,12 @@ func (c *Config) applyDefaults() {
 	if c.Metrics.Addr == "" {
 		c.Metrics.Addr = ":9090"
 	}
+	if c.API.Addr == "" {
+		c.API.Addr = ":8080"
+	}
+	if c.API.TokenEnv == "" {
+		c.API.TokenEnv = "FOGHORN_API_TOKEN"
+	}
 	if c.Slack.AppTokenEnv == "" {
 		c.Slack.AppTokenEnv = "SLACK_APP_TOKEN"
 	}
@@ -295,6 +310,17 @@ func (c *Config) Tokens() (app, bot string, err error) {
 		return "", "", fmt.Errorf("env %s is empty", c.Slack.BotTokenEnv)
 	}
 	return app, bot, nil
+}
+
+// APIToken resolves the API bearer token from its configured env var.
+// Errors if the var is unset so the API fails closed at startup rather
+// than serving authenticated endpoints with an empty token.
+func (c *Config) APIToken() (string, error) {
+	tok := os.Getenv(c.API.TokenEnv)
+	if tok == "" {
+		return "", fmt.Errorf("env %s is empty", c.API.TokenEnv)
+	}
+	return tok, nil
 }
 
 // MonitoredChannels returns the configured channel IDs as a set for

@@ -360,6 +360,64 @@ FROM clusters WHERE channel_id = ? ORDER BY cluster_index`, channelID)
 	return out, rows.Err()
 }
 
+func (s *sqliteStore) ListAllClusters(ctx context.Context) ([]*Cluster, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, channel_id, cluster_index, size, sample_message, centroid_json,
+       stable_tokens_json, last_message_at, interval_mean, interval_stddev
+FROM clusters ORDER BY channel_id, cluster_index`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Cluster
+	for rows.Next() {
+		c, err := scanCluster(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) DeleteClustersByChannel(ctx context.Context, channelID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM clusters WHERE channel_id = ?`, channelID)
+	return err
+}
+
+func (s *sqliteStore) ClearOpenClusterAlertsByChannel(ctx context.Context, channelID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE alerts SET cleared_at = ?
+WHERE channel_id = ? AND cluster_id IS NOT NULL AND cleared_at IS NULL`,
+		at.Unix(), channelID)
+	return err
+}
+
+func (s *sqliteStore) ListAlerts(ctx context.Context, openOnly bool) ([]*Alert, error) {
+	q := `
+SELECT id, sender_id, channel_id, state, raised_at, cleared_at,
+       last_interval_seconds, kind, cluster_id
+FROM alerts`
+	if openOnly {
+		q += ` WHERE cleared_at IS NULL`
+	}
+	q += ` ORDER BY raised_at DESC`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Alert
+	for rows.Next() {
+		a, err := scanAlert(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (s *sqliteStore) UpdateClusterStats(ctx context.Context, id int64, lastMessageAt time.Time, mean, stddev float64) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE clusters SET last_message_at = ?, interval_mean = ?, interval_stddev = ?
@@ -395,6 +453,40 @@ func scanSender(scan scanFn) (*Sender, error) {
 		s.MutedUntil = &t
 	}
 	return &s, nil
+}
+
+func scanAlert(scan scanFn) (*Alert, error) {
+	var (
+		a            Alert
+		senderID     sql.NullString
+		state        sql.NullString
+		raised       int64
+		cleared      sql.NullInt64
+		clusterID    sql.NullInt64
+	)
+	if err := scan(&a.ID, &senderID, &a.ChannelID, &state, &raised, &cleared,
+		&a.LastIntervalSeconds, &a.Kind, &clusterID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if senderID.Valid {
+		a.SenderID = senderID.String
+	}
+	if state.Valid {
+		a.State = SenderState(state.String)
+	}
+	a.RaisedAt = time.Unix(raised, 0)
+	if cleared.Valid {
+		t := time.Unix(cleared.Int64, 0)
+		a.ClearedAt = &t
+	}
+	if clusterID.Valid {
+		v := clusterID.Int64
+		a.ClusterID = &v
+	}
+	return &a, nil
 }
 
 func scanCluster(scan scanFn) (*Cluster, error) {

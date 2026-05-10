@@ -36,6 +36,8 @@ spec:
           ports:
             - name: metrics
               containerPort: 9090
+            - name: api
+              containerPort: 8080
           envFrom:
             - secretRef:
                 name: foghorn-slack

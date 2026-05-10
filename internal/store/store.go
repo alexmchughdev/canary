@@ -85,12 +85,16 @@ type Store interface {
 
 	RaiseClusterAlert(ctx context.Context, a *Alert) (int64, error)
 	ClearOpenClusterAlerts(ctx context.Context, channelID string, clusterID int64, at time.Time) error
+	ClearOpenClusterAlertsByChannel(ctx context.Context, channelID string, at time.Time) error
 	HasOpenClusterAlert(ctx context.Context, channelID string, clusterID int64) (bool, error)
+	ListAlerts(ctx context.Context, openOnly bool) ([]*Alert, error)
 
 	UpsertCluster(ctx context.Context, c *Cluster) error
 	GetClusterByIndex(ctx context.Context, channelID string, clusterIndex int) (*Cluster, error)
 	ListClusters(ctx context.Context, channelID string) ([]*Cluster, error)
+	ListAllClusters(ctx context.Context) ([]*Cluster, error)
 	UpdateClusterStats(ctx context.Context, id int64, lastMessageAt time.Time, mean, stddev float64) error
+	DeleteClustersByChannel(ctx context.Context, channelID string) error
 
 	Close() error
 }
