@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/foghorn-logo.png" alt="Foghorn" width="200">
+</p>
+
 # Foghorn
 
 Slack heartbeat monitor. Detects when services go quiet.
