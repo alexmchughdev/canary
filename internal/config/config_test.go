@@ -243,3 +243,189 @@ func TestTokens(t *testing.T) {
 		t.Fatal("expected error on empty token")
 	}
 }
+
+func TestLoad_connectorsBlock(t *testing.T) {
+	body := `
+connectors:
+  - name: prod-slack
+    type: slack
+    app_token_env: SLACK_APP_TOKEN
+    bot_token_env: SLACK_BOT_TOKEN
+    monitor: [C1, C2]
+alerters:
+  - name: ops-slack
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [CALERT]
+`
+	c, err := Load(writeTmp(t, body))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(c.Connectors) != 1 {
+		t.Fatalf("connectors len=%d", len(c.Connectors))
+	}
+	cc := c.Connectors[0]
+	if cc.Name != "prod-slack" || cc.Type != "slack" {
+		t.Errorf("connector: %+v", cc)
+	}
+	if len(cc.Monitor) != 2 || cc.Monitor[0] != "C1" {
+		t.Errorf("monitor: %+v", cc.Monitor)
+	}
+	got := c.MonitoredChannels()
+	for _, id := range []string{"C1", "C2"} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("MonitoredChannels missing %q", id)
+		}
+	}
+}
+
+func TestValidate_connectorErrors(t *testing.T) {
+	cases := map[string]string{
+		"missing name": `
+connectors:
+  - type: slack
+    monitor: [C1]
+alerters:
+  - name: x
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [C1]
+`,
+		"duplicate name": `
+connectors:
+  - name: a
+    type: slack
+    monitor: [C1]
+  - name: a
+    type: slack
+    monitor: [C2]
+alerters:
+  - name: x
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [C1]
+`,
+		"unknown type": `
+connectors:
+  - name: a
+    type: discord
+    monitor: [C1]
+alerters:
+  - name: x
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [C1]
+`,
+		"empty monitor": `
+connectors:
+  - name: a
+    type: slack
+    monitor: []
+alerters:
+  - name: x
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [C1]
+`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeTmp(t, body)); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestMigrateLegacySlack_synthesises(t *testing.T) {
+	body := `
+slack:
+  app_token_env: X_APP
+  bot_token_env: X_BOT
+channels:
+  monitor: [C1, C2]
+  alert_to: CALERT
+`
+	c, err := Load(writeTmp(t, body))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(c.Connectors) != 0 {
+		t.Fatalf("connectors should be empty pre-migrate, got %d", len(c.Connectors))
+	}
+	c.MigrateLegacySlack(nil)
+	if len(c.Connectors) != 1 {
+		t.Fatalf("after migrate, connectors len=%d", len(c.Connectors))
+	}
+	cc := c.Connectors[0]
+	if cc.Name != "default-slack" || cc.Type != "slack" {
+		t.Errorf("synthesised connector: %+v", cc)
+	}
+	if cc.AppTokenEnv != "X_APP" || cc.BotTokenEnv != "X_BOT" {
+		t.Errorf("token envs not carried over: %+v", cc)
+	}
+	if len(cc.Monitor) != 2 || cc.Monitor[0] != "C1" || cc.Monitor[1] != "C2" {
+		t.Errorf("monitor not carried over: %+v", cc.Monitor)
+	}
+}
+
+func TestMigrateLegacySlack_noopWhenConnectorsConfigured(t *testing.T) {
+	c := &Config{
+		Connectors: []ConnectorConfig{{Name: "x", Type: "slack", Monitor: []string{"C1"}}},
+		Channels:   ChannelsConfig{Monitor: []string{"Clegacy"}},
+	}
+	c.MigrateLegacySlack(nil)
+	if len(c.Connectors) != 1 || c.Connectors[0].Name != "x" {
+		t.Errorf("connectors mutated: %+v", c.Connectors)
+	}
+}
+
+func TestMigrateLegacySlack_idempotent(t *testing.T) {
+	c := &Config{
+		Slack:    SlackConfig{AppTokenEnv: "X_APP", BotTokenEnv: "X_BOT"},
+		Channels: ChannelsConfig{Monitor: []string{"C1"}},
+	}
+	c.MigrateLegacySlack(nil)
+	first := c.Connectors
+	c.MigrateLegacySlack(nil)
+	if len(c.Connectors) != len(first) {
+		t.Errorf("not idempotent: %d → %d", len(first), len(c.Connectors))
+	}
+}
+
+func TestConnectorTokens(t *testing.T) {
+	t.Setenv("APP_X", "xapp-1")
+	t.Setenv("BOT_X", "xoxb-1")
+	cc := ConnectorConfig{AppTokenEnv: "APP_X", BotTokenEnv: "BOT_X"}
+	app, bot, err := cc.Tokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app != "xapp-1" || bot != "xoxb-1" {
+		t.Errorf("tokens: %q %q", app, bot)
+	}
+
+	t.Setenv("APP_X", "")
+	if _, _, err := cc.Tokens(); err == nil {
+		t.Fatal("expected error on empty app token")
+	}
+}
+
+func TestConnectorForChannel(t *testing.T) {
+	c := &Config{
+		Connectors: []ConnectorConfig{
+			{Name: "a", Type: "slack", Monitor: []string{"C1", "C2"}},
+			{Name: "b", Type: "slack", Monitor: []string{"C3"}},
+		},
+	}
+	if got := c.ConnectorForChannel("C2"); got != "a" {
+		t.Errorf("C2: got %q want %q", got, "a")
+	}
+	if got := c.ConnectorForChannel("C3"); got != "b" {
+		t.Errorf("C3: got %q want %q", got, "b")
+	}
+	if got := c.ConnectorForChannel("C-missing"); got != "" {
+		t.Errorf("missing: got %q want empty", got)
+	}
+}

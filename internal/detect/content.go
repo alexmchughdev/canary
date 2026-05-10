@@ -60,6 +60,16 @@ func NewClassifier(fps []cluster.Fingerprint, v *cluster.Vectoriser, opts Classi
 
 // Classify templatises and tokenises the message, vectorises it via
 // the channel's IDF, and returns the nearest-fingerprint verdict.
+//
+// TODO(tuning): the threshold check below is the boundary between
+// unknown_pattern (no cluster matched) and abnormal_content (cluster
+// matched, missing stable tokens). On a low-density corpus a single
+// structural-token swap (e.g. SUCCEEDED→FAILED) can pull similarity
+// under threshold and produce unknown_pattern where the operator might
+// reasonably expect abnormal_content. Both kinds raise alerts so the
+// operational outcome is the same; the kind label is what changes.
+// Tune Threshold against a real production corpus — synthetic data
+// underweights token overlap and isn't the right substrate.
 func (c *Classifier) Classify(text string) Verdict {
 	tokens := cluster.Tokenize(cluster.Templatize(text))
 	vec := c.vectoriser.Vectorise(tokens)

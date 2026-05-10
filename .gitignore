@@ -13,3 +13,7 @@
 /vendor/
 /plan/
 CLAUDE.md
+cmd/synth/
+foghorn.yaml
+foghorn-dev.db
+foghorn.log

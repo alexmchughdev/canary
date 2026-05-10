@@ -11,8 +11,19 @@ import (
 )
 
 type Config struct {
-	Slack     SlackConfig          `yaml:"slack"`
-	Channels  ChannelsConfig       `yaml:"channels"`
+	// Connectors is the new top-level connector list. Each entry is one
+	// connection to one chat platform (currently only "slack" is
+	// implemented). When this list is non-empty it is the source of
+	// truth; the legacy Slack and Channels fields below are accepted
+	// only as a deprecated shim and migrated by MigrateLegacySlack.
+	Connectors []ConnectorConfig `yaml:"connectors"`
+
+	// Slack is the deprecated top-level slack block. Use Connectors.
+	Slack SlackConfig `yaml:"slack"`
+	// Channels is the deprecated top-level channels block. Use the
+	// per-connector Monitor list under Connectors.
+	Channels ChannelsConfig `yaml:"channels"`
+
 	Detection DetectionConfig      `yaml:"detection"`
 	Learning  LearningConfig       `yaml:"learning"`
 	Cluster   ClusterConfig        `yaml:"cluster"`
@@ -22,6 +33,20 @@ type Config struct {
 	Metrics   MetricsConfig        `yaml:"metrics"`
 	API       APIConfig            `yaml:"api"`
 	Senders   map[string]SenderCfg `yaml:"senders"`
+}
+
+// ConnectorConfig is one entry in the connectors: array. Type
+// discriminates which platform-specific fields apply. Only "slack" is
+// implemented today; the schema accepts other types so they can land as
+// a purely additive change later.
+type ConnectorConfig struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"`
+
+	// slack
+	AppTokenEnv string   `yaml:"app_token_env"`
+	BotTokenEnv string   `yaml:"bot_token_env"`
+	Monitor     []string `yaml:"monitor"`
 }
 
 // APIConfig configures the HTTP API server. Addr is the listen address
@@ -241,11 +266,32 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) Validate() error {
-	if len(c.Channels.Monitor) == 0 {
-		return errors.New("channels.monitor must list at least one channel id")
+	hasConnectors := len(c.Connectors) > 0
+	hasLegacy := len(c.Channels.Monitor) > 0
+	if !hasConnectors && !hasLegacy {
+		return errors.New("connectors: must list at least one entry (or use the deprecated channels.monitor shim)")
+	}
+	if hasConnectors {
+		seen := make(map[string]bool, len(c.Connectors))
+		for i, cc := range c.Connectors {
+			if cc.Name == "" {
+				return fmt.Errorf("connectors[%d]: name required", i)
+			}
+			if seen[cc.Name] {
+				return fmt.Errorf("connectors[%d] %q: duplicate name", i, cc.Name)
+			}
+			seen[cc.Name] = true
+			if cc.Type != "slack" {
+				return fmt.Errorf("connectors[%d] %q: unknown type %q (only \"slack\" is supported)",
+					i, cc.Name, cc.Type)
+			}
+			if len(cc.Monitor) == 0 {
+				return fmt.Errorf("connectors[%d] %q: monitor must list at least one channel id", i, cc.Name)
+			}
+		}
 	}
 	if c.Channels.AlertTo == "" && len(c.Alerters) == 0 {
-		return errors.New("either channels.alert_to or alerters must be configured")
+		return errors.New("either alerters: or the deprecated channels.alert_to must be configured")
 	}
 	if c.Detection.DriftSigma <= 0 {
 		return errors.New("detection.drift_sigma must be > 0")
@@ -279,6 +325,63 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// MigrateLegacySlack synthesises a single connector entry from the
+// deprecated top-level slack: and channels.monitor blocks when no
+// connectors: block was provided. Idempotent.
+//
+// "Legacy" is detected via channels.monitor being non-empty —
+// applyDefaults always fills SlackConfig env names, so they aren't a
+// reliable signal of user intent. If both connectors: and the legacy
+// channels.monitor are present, connectors: wins and a conflict warning
+// is emitted.
+func (c *Config) MigrateLegacySlack(log *slog.Logger) {
+	hasLegacy := len(c.Channels.Monitor) > 0
+	if len(c.Connectors) > 0 {
+		if hasLegacy && log != nil {
+			log.Warn("config: both connectors: and the deprecated channels.monitor are present; connectors: wins")
+		}
+		return
+	}
+	if !hasLegacy {
+		return
+	}
+	if log != nil {
+		log.Warn("config: top-level slack:/channels.monitor is deprecated; use connectors:")
+	}
+	c.Connectors = []ConnectorConfig{{
+		Name:        "default-slack",
+		Type:        "slack",
+		AppTokenEnv: c.Slack.AppTokenEnv,
+		BotTokenEnv: c.Slack.BotTokenEnv,
+		Monitor:     append([]string(nil), c.Channels.Monitor...),
+	}}
+}
+
+// Tokens resolves the configured Slack app- and bot-token env vars for
+// this connector. Errors if either is unset so startup fails fast
+// rather than at first handshake.
+func (cc ConnectorConfig) Tokens() (app, bot string, err error) {
+	app = os.Getenv(cc.AppTokenEnv)
+	bot = os.Getenv(cc.BotTokenEnv)
+	if app == "" {
+		return "", "", fmt.Errorf("env %s is empty", cc.AppTokenEnv)
+	}
+	if bot == "" {
+		return "", "", fmt.Errorf("env %s is empty", cc.BotTokenEnv)
+	}
+	return app, bot, nil
+}
+
+// MonitorSet returns the connector's monitored channel IDs as a set
+// for O(1) membership checks at ingest time.
+func (cc ConnectorConfig) MonitorSet() map[string]struct{} {
+	s := make(map[string]struct{}, len(cc.Monitor))
+	for _, id := range cc.Monitor {
+		s[id] = struct{}{}
+	}
+	return s
+}
+
 // MigrateAlertTo synthesizes a default Slack alerter from the legacy
 // channels.alert_to field when no alerters: block was provided. Logs a
 // deprecation warning. Idempotent and safe to call when alerters is
@@ -300,6 +403,9 @@ func (c *Config) MigrateAlertTo(log *slog.Logger) {
 
 // Tokens resolves Slack tokens from the configured env vars. Errors if
 // either is unset so startup fails fast rather than at first handshake.
+//
+// Deprecated: use ConnectorConfig.Tokens() on a specific connector
+// entry instead. Kept only for the legacy slack: shim path.
 func (c *Config) Tokens() (app, bot string, err error) {
 	app = os.Getenv(c.Slack.AppTokenEnv)
 	bot = os.Getenv(c.Slack.BotTokenEnv)
@@ -323,12 +429,38 @@ func (c *Config) APIToken() (string, error) {
 	return tok, nil
 }
 
-// MonitoredChannels returns the configured channel IDs as a set for
-// O(1) membership checks.
+// MonitoredChannels returns the union of all configured connectors'
+// monitored channel IDs as a set. Falls back to the deprecated
+// channels.monitor list when no connectors are configured (pre-migration
+// state).
 func (c *Config) MonitoredChannels() map[string]struct{} {
-	s := make(map[string]struct{}, len(c.Channels.Monitor))
-	for _, id := range c.Channels.Monitor {
-		s[id] = struct{}{}
+	if len(c.Connectors) == 0 {
+		s := make(map[string]struct{}, len(c.Channels.Monitor))
+		for _, id := range c.Channels.Monitor {
+			s[id] = struct{}{}
+		}
+		return s
+	}
+	s := make(map[string]struct{})
+	for _, cc := range c.Connectors {
+		for _, id := range cc.Monitor {
+			s[id] = struct{}{}
+		}
 	}
 	return s
+}
+
+// ConnectorForChannel returns the name of the first connector whose
+// monitor list includes channelID, or "" if no connector matches.
+// Used by alert formatting to attach the originating connector's name
+// to outbound alerts without plumbing it through every call site.
+func (c *Config) ConnectorForChannel(channelID string) string {
+	for _, cc := range c.Connectors {
+		for _, id := range cc.Monitor {
+			if id == channelID {
+				return cc.Name
+			}
+		}
+	}
+	return ""
 }
