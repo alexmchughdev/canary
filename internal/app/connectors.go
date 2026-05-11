@@ -47,6 +47,16 @@ func buildOneConnector(ctx context.Context, cc config.ConnectorConfig, log *slog
 		if err := c.Bootstrap(ctx, cc.Monitor); err != nil {
 			return nil, err
 		}
+		res, err := c.ValidateAccess(ctx)
+		if err != nil {
+			return nil, err
+		}
+		log.Info("slack auth ok",
+			"connector", cc.Name,
+			"team", res.Team,
+			"user", res.User,
+			"channels", len(res.Channels),
+			"scopes", "ok")
 		return c, nil
 	default:
 		return nil, fmt.Errorf("unknown type %q", cc.Type)

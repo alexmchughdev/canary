@@ -151,6 +151,62 @@ func TestResolveMonitor(t *testing.T) {
 	})
 }
 
+func TestScopeDiff(t *testing.T) {
+	t.Run("all present returns nil", func(t *testing.T) {
+		got := scopeDiff(
+			[]string{"channels:read", "chat:write"},
+			[]string{"channels:read", "chat:write", "extra:scope"},
+		)
+		if len(got) != 0 {
+			t.Errorf("expected no missing, got %v", got)
+		}
+	})
+
+	t.Run("missing surfaces in required order", func(t *testing.T) {
+		got := scopeDiff(
+			[]string{"channels:history", "channels:read", "chat:write", "groups:history", "groups:read"},
+			[]string{"channels:read", "chat:write"},
+		)
+		want := []string{"channels:history", "groups:history", "groups:read"}
+		if !equalStrings(got, want) {
+			t.Errorf("missing = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("whitespace in granted is tolerated", func(t *testing.T) {
+		got := scopeDiff(
+			[]string{"channels:read"},
+			[]string{" channels:read ", "chat:write"},
+		)
+		if len(got) != 0 {
+			t.Errorf("whitespace not trimmed: missing=%v", got)
+		}
+	})
+
+	t.Run("empty granted returns full required", func(t *testing.T) {
+		got := scopeDiff([]string{"a", "b"}, nil)
+		want := []string{"a", "b"}
+		if !equalStrings(got, want) {
+			t.Errorf("got %v want %v", got, want)
+		}
+	})
+}
+
+func TestRequiredScopes_matchManifest(t *testing.T) {
+	// Pin the documented required-scopes set so manifest changes that
+	// drift from runtime requirements surface as a test failure.
+	want := []string{
+		"channels:history",
+		"channels:read",
+		"chat:write",
+		"groups:history",
+		"groups:read",
+	}
+	if !equalStrings(RequiredScopes, want) {
+		t.Errorf("RequiredScopes = %v, want %v", RequiredScopes, want)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

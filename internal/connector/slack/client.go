@@ -4,8 +4,10 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +18,17 @@ import (
 
 	"github.com/alexmchughdev/foghorn/internal/connector"
 )
+
+// RequiredScopes lists the OAuth scopes Foghorn needs at runtime. Keep
+// in lockstep with slack/manifest.yaml so the manifest, validator, and
+// docs can't drift apart.
+var RequiredScopes = []string{
+	"channels:history",
+	"channels:read",
+	"chat:write",
+	"groups:history",
+	"groups:read",
+}
 
 const platform = "slack"
 
@@ -171,6 +184,120 @@ func resolveMonitor(desired []string, known []channelMeta) (resolved []string, m
 		missing = append(missing, "#"+name)
 	}
 	return resolved, missing
+}
+
+// ValidationResult is what ValidateAccess returns on success. The
+// caller logs a one-line summary based on these fields.
+type ValidationResult struct {
+	Team     string
+	User     string
+	Scopes   []string
+	Channels []channelMeta
+}
+
+// ValidateAccess confirms the bot's token works, that the granted
+// scopes cover RequiredScopes, and that the bot is a member of every
+// channel in c.monitor. Intended to run once at boot, after Bootstrap,
+// before any goroutines start.
+//
+// Returns actionable errors:
+//
+//   - missing scopes name the gap and point at slack/manifest.yaml
+//   - not-a-member errors name the channel and tell the operator to
+//     /invite the bot
+func (c *Client) ValidateAccess(ctx context.Context) (*ValidationResult, error) {
+	auth, err := c.api.AuthTestContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("auth.test: %w", err)
+	}
+
+	granted, err := c.grantedScopes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("granted scopes: %w", err)
+	}
+	if missing := scopeDiff(RequiredScopes, granted); len(missing) > 0 {
+		return nil, fmt.Errorf(
+			"missing Slack scope(s): %s. Update the app's OAuth scopes (see slack/manifest.yaml) and reinstall the bot",
+			strings.Join(missing, ", "))
+	}
+
+	var (
+		channels  []channelMeta
+		notMember []string
+	)
+	for _, id := range c.Monitored() {
+		info, err := c.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: id})
+		if err != nil {
+			return nil, fmt.Errorf("conversations.info %s: %w", id, err)
+		}
+		if !info.IsMember {
+			notMember = append(notMember, fmt.Sprintf("#%s (%s)", info.Name, id))
+			continue
+		}
+		channels = append(channels, channelMeta{ID: id, Name: info.Name})
+	}
+	if len(notMember) > 0 {
+		return nil, fmt.Errorf(
+			"bot is not a member of: %s. Invite the bot with /invite in each channel and retry",
+			strings.Join(notMember, ", "))
+	}
+
+	return &ValidationResult{
+		Team:     auth.Team,
+		User:     auth.User,
+		Scopes:   granted,
+		Channels: channels,
+	}, nil
+}
+
+// scopeDiff returns the elements of required that aren't in granted.
+// Whitespace around granted entries is tolerated; Slack returns the
+// X-OAuth-Scopes header as a comma-separated list which can include
+// stray spaces.
+func scopeDiff(required, granted []string) []string {
+	have := make(map[string]struct{}, len(granted))
+	for _, s := range granted {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			have[s] = struct{}{}
+		}
+	}
+	var missing []string
+	for _, s := range required {
+		if _, ok := have[s]; !ok {
+			missing = append(missing, s)
+		}
+	}
+	return missing
+}
+
+// grantedScopes hits Slack's auth.test endpoint directly so we can read
+// the X-OAuth-Scopes response header. slack-go's high-level client
+// discards response headers, and Slack doesn't expose granted scopes
+// in any JSON response body.
+func (c *Client) grantedScopes(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://slack.com/api/auth.test", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	hdr := resp.Header.Get("X-OAuth-Scopes")
+	if hdr == "" {
+		return nil, errors.New("no X-OAuth-Scopes header in response")
+	}
+	var out []string
+	for _, s := range strings.Split(hdr, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // looksLikeChannelID matches Slack's public/private channel ID shape:
