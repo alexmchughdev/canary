@@ -216,21 +216,15 @@ func idSet(ids []string) map[string]struct{} {
 	return s
 }
 
-// listBotChannels pages users.conversations and returns the channels
-// the authenticated bot is a member of. Public and private channels
-// both qualify; DMs and MPIMs are intentionally excluded since they
-// aren't valid heartbeat channels.
-//
-// Membership is enforced by the API (users.conversations returns only
-// channels the caller is in), so no client-side IsMember filter is
-// needed. This replaced an earlier conversations.list + IsMember-
-// filter approach to remove the implicit trust in Slack's is_member
-// field being correctly populated on every paginated response.
+// listBotChannels pages conversations.list and returns the channels the
+// bot is a member of. Public and private channels both qualify; DMs and
+// MPIMs are intentionally excluded since they aren't valid heartbeat
+// channels.
 func (c *Client) listBotChannels(ctx context.Context) ([]channelMeta, error) {
 	var out []channelMeta
 	cursor := ""
 	for {
-		chans, next, err := c.api.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
+		chans, next, err := c.api.GetConversationsContext(ctx, &slack.GetConversationsParameters{
 			Types:           []string{"public_channel", "private_channel"},
 			ExcludeArchived: true,
 			Limit:           200,
@@ -240,7 +234,9 @@ func (c *Client) listBotChannels(ctx context.Context) ([]channelMeta, error) {
 			return nil, err
 		}
 		for _, ch := range chans {
-			out = append(out, channelMeta{ID: ch.ID, Name: ch.Name})
+			if ch.IsMember {
+				out = append(out, channelMeta{ID: ch.ID, Name: ch.Name})
+			}
 		}
 		if next == "" {
 			break
