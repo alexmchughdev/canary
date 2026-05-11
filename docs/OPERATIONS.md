@@ -89,3 +89,7 @@ Real workloads with service-status cadences in the seconds-to-minutes range don'
 | Many `unknown_pattern` alerts on a channel that should be settled | `match_threshold` may be too high for this channel's corpus. Try `POST /relearn?channel=...` first to rule out a stale cluster. |
 | API returns 401 | `FOGHORN_API_TOKEN` env var unset, or wrong token in `Authorization: Bearer ...`. Foghorn refuses to start if the env var is empty, so the API only ever serves with a populated token. |
 | `backfill_overlap` counter climbing forever | Means Slack is redelivering events well past the expected catch-up window. Worth investigating connection stability. |
+
+## Known verification gaps
+
+The scope-mismatch error path in `ValidateAccess` is covered by unit tests but has not been exercised against a live Slack workspace. The unit tests pin `RequiredScopes` against `slack/manifest.yaml`, so the mismatch case is structurally tested. Verifying the live error message would require rotating the bot token twice (once to remove a scope, once to restore), which is not yet automated.
