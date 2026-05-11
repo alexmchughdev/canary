@@ -12,4 +12,3 @@ COPY --from=build /out/foghorn /foghorn
 USER nonroot:nonroot
 EXPOSE 8080 9090
 ENTRYPOINT ["/foghorn"]
-CMD ["-config", "/etc/foghorn/foghorn.yaml"]

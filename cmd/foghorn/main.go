@@ -2,8 +2,12 @@
 //
 // Subcommands:
 //
-//	foghorn run   -config foghorn.yaml   (default if no subcommand)
-//	foghorn check -config foghorn.yaml   pre-flight validation only
+//	foghorn run   [-config foghorn.yaml]   (default if no subcommand)
+//	foghorn check [-config foghorn.yaml]   pre-flight validation only
+//
+// When -config is omitted the binary boots from environment variables
+// alone (SLACK_APP_TOKEN, SLACK_BOT_TOKEN, FOGHORN_API_TOKEN, and the
+// optional FOGHORN_ALERT_CHANNEL); see config.FromEnv.
 package main
 
 import (
@@ -34,7 +38,7 @@ func main() {
 	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
-	cfgPath := fs.String("config", "foghorn.yaml", "path to YAML config file")
+	cfgPath := fs.String("config", "", "path to YAML config file; when unset, config is built from environment variables")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -55,7 +59,7 @@ func main() {
 }
 
 func run(cfgPath string, log *slog.Logger) error {
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadConfig(cfgPath, log)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -103,7 +107,7 @@ func run(cfgPath string, log *slog.Logger) error {
 //
 // Useful for CI, pre-deployment checks, and debugging misconfiguration.
 func check(cfgPath string, log *slog.Logger) error {
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadConfig(cfgPath, log)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -136,9 +140,38 @@ func check(cfgPath string, log *slog.Logger) error {
 		totalChannels += len(c.Monitored())
 	}
 	log.Info("foghorn check ok",
-		"config", cfgPath,
+		"config", configSource(cfgPath),
 		"connectors", len(conns),
 		"alerters", len(cfg.Alerters),
 		"channels", totalChannels)
 	return nil
+}
+
+// loadConfig picks between the YAML file path (when -config was set)
+// and the environment-only default builder. A missing -config means
+// "build from env"; an explicit -config to a missing file is an error
+// (treated as a typo or a misconfigured deployment, not an invitation
+// to silently fall back).
+func loadConfig(cfgPath string, log *slog.Logger) (*config.Config, error) {
+	if cfgPath == "" {
+		cfg, err := config.FromEnv()
+		if err != nil {
+			return nil, err
+		}
+		log.Info("config: loaded from environment")
+		return cfg, nil
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("config: loaded from file", "path", cfgPath)
+	return cfg, nil
+}
+
+func configSource(cfgPath string) string {
+	if cfgPath == "" {
+		return "env"
+	}
+	return cfgPath
 }

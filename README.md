@@ -69,6 +69,8 @@ Pre-built multi-architecture images are published to GitHub Container Registry o
 
 ### Docker
 
+The image boots from environment variables alone: no config file needs to be mounted. The bot auto-discovers every channel it's a member of, and alerts post to `#alerts` by default (override with `FOGHORN_ALERT_CHANNEL`).
+
 ```bash
 docker run -d \
   --name foghorn \
@@ -78,6 +80,21 @@ docker run -d \
   -v $(pwd)/data:/var/lib/foghorn \
   -p 8080:8080 -p 9090:9090 \
   ghcr.io/alexmchughdev/foghorn:latest
+```
+
+To opt into file-based config (channel allow-listing, multiple alerters, detection-knob tuning), mount a `foghorn.yaml` and pass `-config` as a CMD override:
+
+```bash
+docker run -d \
+  --name foghorn \
+  -e SLACK_BOT_TOKEN=xoxb-... \
+  -e SLACK_APP_TOKEN=xapp-... \
+  -e FOGHORN_API_TOKEN=$(openssl rand -hex 32) \
+  -v $(pwd)/data:/var/lib/foghorn \
+  -v $(pwd)/foghorn.yaml:/etc/foghorn/foghorn.yaml:ro \
+  -p 8080:8080 -p 9090:9090 \
+  ghcr.io/alexmchughdev/foghorn:latest \
+  -config /etc/foghorn/foghorn.yaml
 ```
 
 Image tags:

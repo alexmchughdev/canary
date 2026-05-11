@@ -427,6 +427,60 @@ func TestConnectorTokens(t *testing.T) {
 	}
 }
 
+func TestFromEnv_defaults(t *testing.T) {
+	t.Setenv("FOGHORN_ALERT_CHANNEL", "")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if len(c.Connectors) != 1 {
+		t.Fatalf("connectors len=%d", len(c.Connectors))
+	}
+	cc := c.Connectors[0]
+	if cc.Name != "slack-main" || cc.Type != "slack" {
+		t.Errorf("connector: %+v", cc)
+	}
+	if cc.AppTokenEnv != "SLACK_APP_TOKEN" || cc.BotTokenEnv != "SLACK_BOT_TOKEN" {
+		t.Errorf("token envs: %+v", cc)
+	}
+	if len(cc.Monitor) != 0 {
+		t.Errorf("monitor should be empty for auto-discovery, got %+v", cc.Monitor)
+	}
+	if len(c.Alerters) != 1 {
+		t.Fatalf("alerters len=%d", len(c.Alerters))
+	}
+	a := c.Alerters[0]
+	if a.Name != "ops-slack" || a.Type != "slack" {
+		t.Errorf("alerter: %+v", a)
+	}
+	if a.BotTokenEnv != "SLACK_BOT_TOKEN" {
+		t.Errorf("alerter bot token env: %q", a.BotTokenEnv)
+	}
+	if len(a.Channels) != 1 || a.Channels[0] != "#alerts" {
+		t.Errorf("alerter channels: %+v", a.Channels)
+	}
+	if c.Metrics.Addr != ":9090" {
+		t.Errorf("metrics addr: %q", c.Metrics.Addr)
+	}
+	if c.API.Addr != ":8080" || c.API.TokenEnv != "FOGHORN_API_TOKEN" {
+		t.Errorf("api: %+v", c.API)
+	}
+	if c.Store.Path == "" {
+		t.Error("store path empty")
+	}
+}
+
+func TestFromEnv_alertChannelOverride(t *testing.T) {
+	t.Setenv("FOGHORN_ALERT_CHANNEL", "#ops-foghorn")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if got := c.Alerters[0].Channels[0]; got != "#ops-foghorn" {
+		t.Errorf("alert channel: got %q want %q", got, "#ops-foghorn")
+	}
+}
+
 func TestConnectorForChannel(t *testing.T) {
 	c := &Config{
 		Connectors: []ConnectorConfig{
