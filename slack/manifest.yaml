@@ -1,0 +1,27 @@
+_metadata:
+  major_version: 1
+display_information:
+  name: Foghorn
+  description: Anomaly detector for service-status messages
+  background_color: "#C8312B"
+features:
+  bot_user:
+    display_name: Foghorn
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - channels:read
+      - chat:write
+      - groups:history
+      - groups:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - message.groups
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  is_hosted: false
+  token_rotation_enabled: false

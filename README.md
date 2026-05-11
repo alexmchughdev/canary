@@ -8,23 +8,56 @@ Foghorn watches Slack channels where services post status messages, learns what 
 
 ## Quick start
 
+### 1. Create the Slack app
+
+Foghorn ships a [Slack app manifest](slack/manifest.yaml) that defines every scope, event subscription, and setting the bot needs. To install:
+
+1. Go to <https://api.slack.com/apps> and click **Create New App** then **From an app manifest**.
+2. Pick your workspace.
+3. Paste the contents of [`slack/manifest.yaml`](slack/manifest.yaml).
+4. Confirm and create the app.
+
+### 2. Generate tokens
+
+Two Slack tokens are required, plus a bearer token of your choice for Foghorn's HTTP API.
+
+- **App-Level Token** (`xapp-...`): on the app's **Basic Information** page, scroll to *App-Level Tokens* and generate one with the `connections:write` scope. This drives the Socket Mode WebSocket.
+- **Bot User OAuth Token** (`xoxb-...`): on the **Install App** page, install to the workspace, then copy the bot token shown.
+- **API token**: any secret you want Foghorn's read API to accept. Generate one with `openssl rand -hex 32`.
+
+### 3. Invite the bot to channels
+
+In every Slack channel you want Foghorn to monitor:
+
+    /invite @Foghorn
+
+Foghorn auto-discovers channels the bot is a member of at boot; you don't need to copy channel IDs into config unless you want to restrict to a subset.
+
+### 4. Build and run
+
     git clone https://github.com/alexmchughdev/foghorn
     cd foghorn
     make build
 
-Copy the example config and point it at your channels:
-
-    cp examples/foghorn.yaml foghorn.yaml
-    $EDITOR foghorn.yaml      # set channel IDs, env-var names, alerter sinks
-
-Export the secrets and run:
-
     export SLACK_APP_TOKEN=xapp-...
     export SLACK_BOT_TOKEN=xoxb-...
     export FOGHORN_API_TOKEN=...
+
+    cp examples/foghorn.yaml foghorn.yaml   # optional: tweak detection knobs
     ./foghorn -config foghorn.yaml
 
-`SLACK_*` tokens come from a Slack app with Socket Mode enabled and the bot invited to every monitored channel. `FOGHORN_API_TOKEN` is whatever bearer secret you want the read API to accept.
+By default Foghorn monitors every channel the bot is in. To restrict to a subset, set `connectors[].monitor` in `foghorn.yaml` to a list of channel names (`#deploys`) or IDs (`C0B3Q17FZ2L`):
+
+```yaml
+connectors:
+  - name: prod-slack
+    type: slack
+    app_token_env: SLACK_APP_TOKEN
+    bot_token_env: SLACK_BOT_TOKEN
+    monitor:
+      - "#deploys"
+      - "#health"
+```
 
 ## Architecture
 
