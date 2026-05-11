@@ -82,6 +82,20 @@ Image tags:
 - `sha-<full-git-sha>`: any pushed commit.
 - `<tag>`: any pushed git tag (e.g. release tags).
 
+### Docker Compose
+
+A reference [`docker-compose.yml`](docker-compose.yml) ships at the repo root for the common single-host case:
+
+```bash
+git clone https://github.com/alexmchughdev/foghorn
+cd foghorn
+cp .env.example .env
+$EDITOR .env             # fill in the three tokens
+docker compose up -d
+```
+
+The compose file mounts `./data` for the SQLite store and exposes both the API and metrics ports. `.env.example` lists every required variable and shows how to generate the API bearer token.
+
 ### Kubernetes
 
 Reference manifests live in [`deploy/k8s/`](deploy/k8s/) (Deployment, Service, PVC, ConfigMap, ExternalSecret for token wiring) and an ArgoCD `Application` in [`deploy/argocd/`](deploy/argocd/). The Deployment runs as non-root, mounts the SQLite store on a PVC, and exposes both the API and metrics ports.
