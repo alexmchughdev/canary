@@ -59,6 +59,33 @@ connectors:
       - "#health"
 ```
 
+## Deployment
+
+Pre-built multi-architecture images are published to GitHub Container Registry on every push to `main` and on tagged releases. The image is `linux/amd64` and `linux/arm64`.
+
+### Docker
+
+```bash
+docker run -d \
+  --name foghorn \
+  -e SLACK_BOT_TOKEN=xoxb-... \
+  -e SLACK_APP_TOKEN=xapp-... \
+  -e FOGHORN_API_TOKEN=$(openssl rand -hex 32) \
+  -v $(pwd)/data:/var/lib/foghorn \
+  -p 8080:8080 -p 9090:9090 \
+  ghcr.io/alexmchughdev/foghorn:latest
+```
+
+Image tags:
+
+- `latest`: current `main`.
+- `sha-<full-git-sha>`: any pushed commit.
+- `<tag>`: any pushed git tag (e.g. release tags).
+
+### Kubernetes
+
+Reference manifests live in [`deploy/k8s/`](deploy/k8s/) (Deployment, Service, PVC, ConfigMap, ExternalSecret for token wiring) and an ArgoCD `Application` in [`deploy/argocd/`](deploy/argocd/). The Deployment runs as non-root, mounts the SQLite store on a PVC, and exposes both the API and metrics ports.
+
 ## Architecture
 
 ```mermaid

@@ -10,6 +10,6 @@ RUN CGO_ENABLED=0 GOFLAGS=-trimpath \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/foghorn /foghorn
 USER nonroot:nonroot
-EXPOSE 9090
+EXPOSE 8080 9090
 ENTRYPOINT ["/foghorn"]
 CMD ["-config", "/etc/foghorn/foghorn.yaml"]
