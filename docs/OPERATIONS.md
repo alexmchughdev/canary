@@ -84,6 +84,22 @@ Real workloads with service-status cadences in the seconds-to-minutes range don'
 - Raise `detection.offline_multiplier` so the offline threshold is well above one tick interval.
 - Set `detection.hard_cap` high enough that genuinely-slow senders don't get clamped to a short offline threshold.
 
+## Alert sinks
+
+### PagerDuty severity allow-list
+
+The PagerDuty sink filters trigger events by Foghorn severity. The default allow-list is `["critical"]` — only critical-severity alerts surface as PagerDuty incidents. Set `PAGERDUTY_SEVERITIES=critical,warning` to widen it, or `critical,warning,info` to capture every event (rarely a good idea on a human-paging integration).
+
+Resolve events bypass the filter. If a `critical` frequency alert fires, the matching `info`-severity recovery still posts as `event_action: "resolve"` regardless of whether `info` is in the allow-list. This keeps PagerDuty incidents from dangling open after the underlying condition clears.
+
+Dedup keys are derived from `connector`, `channel`, `kind`, and `sender_id`. Cluster-scoped `missing_pattern` alerts arrive without a sender id and currently fall back to a per-(channel, kind) key — multiple clusters in the same channel collapse to one PagerDuty incident, matching the existing per-(channel, kind) cooldown gate in the worker.
+
+### Email (SMTP) gotchas
+
+- Most providers require STARTTLS on port 587 with PLAIN auth. Port 465 (SMTPS, implicit TLS) is not supported by the current sink — use a 587/STARTTLS-capable relay.
+- Gmail and Workspace require an **App Password**, not the account password, when 2FA is enabled. Generate one at <https://myaccount.google.com/apppasswords> and put it in `SMTP_PASSWORD`.
+- The sink fans email out to every address in `SMTP_TO` in one envelope; recipient-specific failures fall back to a single error returned from `smtp.SendMail`. For large distribution lists, prefer a mailing-list address that handles fan-out at the MTA layer.
+
 ## Where to look first when something breaks
 
 | Symptom | Where to look |

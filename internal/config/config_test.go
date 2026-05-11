@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -478,6 +479,184 @@ func TestFromEnv_alertChannelOverride(t *testing.T) {
 	}
 	if got := c.Alerters[0].Channels[0]; got != "#ops-foghorn" {
 		t.Errorf("alert channel: got %q want %q", got, "#ops-foghorn")
+	}
+}
+
+func clearEmailEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TO"} {
+		t.Setenv(k, "")
+	}
+}
+
+func setEmailEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SMTP_HOST", "smtp.example.com")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_USERNAME", "foghorn@example.com")
+	t.Setenv("SMTP_PASSWORD", "secret")
+	t.Setenv("SMTP_FROM", "foghorn@example.com")
+	t.Setenv("SMTP_TO", "oncall@example.com,backup@example.com")
+}
+
+func TestFromEnv_emailAlerter_disabledWhenHostUnset(t *testing.T) {
+	clearEmailEnv(t)
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range c.Alerters {
+		if a.Type == "email" {
+			t.Errorf("email alerter should not be built without SMTP_HOST: %+v", a)
+		}
+	}
+}
+
+func TestFromEnv_emailAlerter_enabledWhenHostSet(t *testing.T) {
+	setEmailEnv(t)
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	var got *AlerterConfig
+	for i, a := range c.Alerters {
+		if a.Type == "email" {
+			got = &c.Alerters[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected an email alerter; got %+v", c.Alerters)
+	}
+	if got.SMTPHost != "smtp.example.com" || got.SMTPPort != 587 {
+		t.Errorf("host/port: %+v", got)
+	}
+	if got.UserEnv != "SMTP_USERNAME" || got.PasswordEnv != "SMTP_PASSWORD" {
+		t.Errorf("env names: %+v", got)
+	}
+	if got.From != "foghorn@example.com" {
+		t.Errorf("from: %q", got.From)
+	}
+	if len(got.To) != 2 || got.To[0] != "oncall@example.com" || got.To[1] != "backup@example.com" {
+		t.Errorf("to: %+v", got.To)
+	}
+}
+
+func TestFromEnv_emailAlerter_partialEnvErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		unset string
+	}{
+		{"missing SMTP_PORT", "SMTP_PORT"},
+		{"missing SMTP_USERNAME", "SMTP_USERNAME"},
+		{"missing SMTP_PASSWORD", "SMTP_PASSWORD"},
+		{"missing SMTP_FROM", "SMTP_FROM"},
+		{"missing SMTP_TO", "SMTP_TO"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setEmailEnv(t)
+			t.Setenv(tc.unset, "")
+			_, err := FromEnv()
+			if err == nil {
+				t.Fatalf("expected error when %s is unset", tc.unset)
+			}
+			if !strings.Contains(err.Error(), tc.unset) {
+				t.Errorf("error should mention %s: %v", tc.unset, err)
+			}
+		})
+	}
+}
+
+func TestFromEnv_emailAlerter_invalidPort(t *testing.T) {
+	setEmailEnv(t)
+	t.Setenv("SMTP_PORT", "not-a-number")
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("expected error on non-numeric SMTP_PORT")
+	}
+}
+
+func TestFromEnv_pagerduty_disabledWhenKeyUnset(t *testing.T) {
+	t.Setenv("PAGERDUTY_ROUTING_KEY", "")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range c.Alerters {
+		if a.Type == "pagerduty" {
+			t.Errorf("pagerduty alerter should not be built without PAGERDUTY_ROUTING_KEY: %+v", a)
+		}
+	}
+}
+
+func TestFromEnv_pagerduty_enabledWhenKeySet(t *testing.T) {
+	t.Setenv("PAGERDUTY_ROUTING_KEY", "r0")
+	t.Setenv("PAGERDUTY_SEVERITIES", "")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *AlerterConfig
+	for i, a := range c.Alerters {
+		if a.Type == "pagerduty" {
+			got = &c.Alerters[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected a pagerduty alerter; got %+v", c.Alerters)
+	}
+	if got.RoutingKeyEnv != "PAGERDUTY_ROUTING_KEY" {
+		t.Errorf("routing_key_env: %q", got.RoutingKeyEnv)
+	}
+	// Empty PAGERDUTY_SEVERITIES leaves Severities nil; the alerter
+	// package then defaults to ["critical"].
+	if len(got.Severities) != 0 {
+		t.Errorf("severities should be empty for default: %+v", got.Severities)
+	}
+}
+
+func TestFromEnv_pagerduty_severitiesParsed(t *testing.T) {
+	t.Setenv("PAGERDUTY_ROUTING_KEY", "r0")
+	t.Setenv("PAGERDUTY_SEVERITIES", "critical, warning")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *AlerterConfig
+	for i, a := range c.Alerters {
+		if a.Type == "pagerduty" {
+			got = &c.Alerters[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("missing pagerduty alerter")
+	}
+	if len(got.Severities) != 2 || got.Severities[0] != "critical" || got.Severities[1] != "warning" {
+		t.Errorf("severities: %+v", got.Severities)
+	}
+}
+
+func TestFromEnv_allSinks(t *testing.T) {
+	setEmailEnv(t)
+	t.Setenv("PAGERDUTY_ROUTING_KEY", "r0")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Alerters) != 3 {
+		t.Fatalf("expected 3 alerters (slack+email+pagerduty), got %d: %+v",
+			len(c.Alerters), c.Alerters)
+	}
+	types := map[string]bool{}
+	for _, a := range c.Alerters {
+		types[a.Type] = true
+	}
+	for _, want := range []string{"slack", "email", "pagerduty"} {
+		if !types[want] {
+			t.Errorf("missing %s sink", want)
+		}
 	}
 }
 
