@@ -214,6 +214,52 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// FromEnv builds a Config from environment variables alone, for the
+// no-mounted-config container case. It synthesises a single Slack
+// connector with an empty monitor list (auto-discovers every channel
+// the bot is in at startup) and a single Slack alerter that posts to
+// FOGHORN_ALERT_CHANNEL, defaulting to "#alerts". All other knobs take
+// the same defaults Load applies. SLACK_APP_TOKEN, SLACK_BOT_TOKEN, and
+// FOGHORN_API_TOKEN are read at boot via the usual env-name indirection,
+// not captured here.
+func FromEnv() (*Config, error) {
+	alertChan := os.Getenv("FOGHORN_ALERT_CHANNEL")
+	if alertChan == "" {
+		alertChan = "#alerts"
+	}
+	c := &Config{
+		Connectors: []ConnectorConfig{{
+			Name:        "slack-main",
+			Type:        "slack",
+			AppTokenEnv: "SLACK_APP_TOKEN",
+			BotTokenEnv: "SLACK_BOT_TOKEN",
+		}},
+		Alerters: []AlerterConfig{{
+			Name:        "ops-slack",
+			Type:        "slack",
+			BotTokenEnv: "SLACK_BOT_TOKEN",
+			Channels:    []string{alertChan},
+		}},
+		Store: StoreConfig{Path: defaultStorePath()},
+	}
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("env config: %w", err)
+	}
+	return c, nil
+}
+
+// defaultStorePath returns /var/lib/foghorn/foghorn.db when that
+// directory exists (the docker-compose mount point) and the working-
+// directory fallback otherwise so a bare `./foghorn run` from source
+// doesn't try to write to a system path it can't reach.
+func defaultStorePath() string {
+	if fi, err := os.Stat("/var/lib/foghorn"); err == nil && fi.IsDir() {
+		return "/var/lib/foghorn/foghorn.db"
+	}
+	return "foghorn.db"
+}
+
 func (c *Config) applyDefaults() {
 	if c.Detection.LearningMessages == 0 {
 		c.Detection.LearningMessages = 20
