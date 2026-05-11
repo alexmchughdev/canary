@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexmchughdev/foghorn/internal/alerter"
 	emailalerter "github.com/alexmchughdev/foghorn/internal/alerter/email"
+	pagerdutyalerter "github.com/alexmchughdev/foghorn/internal/alerter/pagerduty"
 	slackalerter "github.com/alexmchughdev/foghorn/internal/alerter/slack"
 	"github.com/alexmchughdev/foghorn/internal/api"
 	"github.com/alexmchughdev/foghorn/internal/cluster"
@@ -57,6 +58,16 @@ func buildOne(ac config.AlerterConfig) (alerter.Alerter, error) {
 			Password: os.Getenv(ac.PasswordEnv),
 			From:     ac.From,
 			To:       ac.To,
+		})
+	case "pagerduty":
+		key := os.Getenv(ac.RoutingKeyEnv)
+		if key == "" {
+			return nil, fmt.Errorf("env %s is empty", ac.RoutingKeyEnv)
+		}
+		return pagerdutyalerter.New(pagerdutyalerter.Options{
+			Name:       ac.Name,
+			RoutingKey: key,
+			Severities: ac.Severities,
 		})
 	default:
 		return nil, fmt.Errorf("unknown alerter type %q", ac.Type)

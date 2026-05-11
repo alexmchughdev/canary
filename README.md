@@ -103,6 +103,41 @@ Image tags:
 - `sha-<full-git-sha>`: any pushed commit.
 - `<tag>`: any pushed git tag (e.g. release tags).
 
+### Multiple alert sinks
+
+Slack alerting is on by default. Email and PagerDuty can be enabled by setting their respective env vars; the env-driven boot path picks them up automatically and fans every alert out to all configured sinks concurrently. No YAML required for any combination.
+
+**Email (SMTP).** `SMTP_HOST` gates the sink; when set, the rest are required:
+
+```bash
+docker run -d \
+  --name foghorn \
+  -e SLACK_BOT_TOKEN=xoxb-... \
+  -e SLACK_APP_TOKEN=xapp-... \
+  -e FOGHORN_API_TOKEN=$(openssl rand -hex 32) \
+  -e SMTP_HOST=smtp.example.com \
+  -e SMTP_PORT=587 \
+  -e SMTP_USERNAME=foghorn-alerts@example.com \
+  -e SMTP_PASSWORD=... \
+  -e SMTP_FROM=foghorn-alerts@example.com \
+  -e SMTP_TO=oncall@example.com,backup@example.com \
+  -v $(pwd)/data:/var/lib/foghorn \
+  -p 8080:8080 -p 9090:9090 \
+  ghcr.io/alexmchughdev/foghorn:latest
+```
+
+**PagerDuty (Events API v2).** `PAGERDUTY_ROUTING_KEY` gates the sink. By default only `critical`-severity alerts fire (warning-level content alerts are noise for an on-call pager); `PAGERDUTY_SEVERITIES` widens the allow-list:
+
+```bash
+docker run -d \
+  ... \
+  -e PAGERDUTY_ROUTING_KEY=<integration-key> \
+  -e PAGERDUTY_SEVERITIES=critical,warning \
+  ghcr.io/alexmchughdev/foghorn:latest
+```
+
+The PagerDuty sink uses stable `dedup_key`s so a recovery alert resolves the matching open incident.
+
 ### Docker Compose
 
 A reference [`docker-compose.yml`](docker-compose.yml) ships at the repo root for the common single-host case:

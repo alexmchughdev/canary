@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -61,7 +63,7 @@ type APIConfig struct {
 // fields below apply.
 type AlerterConfig struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"` // "slack" or "email"
+	Type string `yaml:"type"` // "slack", "email", or "pagerduty"
 
 	// slack
 	BotTokenEnv string   `yaml:"bot_token_env"`
@@ -74,6 +76,10 @@ type AlerterConfig struct {
 	PasswordEnv string   `yaml:"password_env"`
 	From        string   `yaml:"from"`
 	To          []string `yaml:"to"`
+
+	// pagerduty
+	RoutingKeyEnv string   `yaml:"routing_key_env"`
+	Severities    []string `yaml:"severities"`
 }
 
 type SlackConfig struct {
@@ -217,15 +223,33 @@ func Load(path string) (*Config, error) {
 // FromEnv builds a Config from environment variables alone, for the
 // no-mounted-config container case. It synthesises a single Slack
 // connector with an empty monitor list (auto-discovers every channel
-// the bot is in at startup) and a single Slack alerter that posts to
-// FOGHORN_ALERT_CHANNEL, defaulting to "#alerts". All other knobs take
-// the same defaults Load applies. SLACK_APP_TOKEN, SLACK_BOT_TOKEN, and
-// FOGHORN_API_TOKEN are read at boot via the usual env-name indirection,
-// not captured here.
+// the bot is in at startup) and a default Slack alerter that posts to
+// FOGHORN_ALERT_CHANNEL (default "#alerts"). When their gate env vars
+// are set, an email alerter (SMTP_HOST) and a PagerDuty alerter
+// (PAGERDUTY_ROUTING_KEY) are added to the Multi fan-out. All other
+// knobs take the same defaults Load applies. Token-bearing env vars are
+// referenced by name, not captured by value, so log redaction and
+// rotation remain orthogonal.
 func FromEnv() (*Config, error) {
 	alertChan := os.Getenv("FOGHORN_ALERT_CHANNEL")
 	if alertChan == "" {
 		alertChan = "#alerts"
+	}
+	alerters := []AlerterConfig{{
+		Name:        "ops-slack",
+		Type:        "slack",
+		BotTokenEnv: "SLACK_BOT_TOKEN",
+		Channels:    []string{alertChan},
+	}}
+	if email, err := emailFromEnv(); err != nil {
+		return nil, err
+	} else if email != nil {
+		alerters = append(alerters, *email)
+	}
+	if pd, err := pagerdutyFromEnv(); err != nil {
+		return nil, err
+	} else if pd != nil {
+		alerters = append(alerters, *pd)
 	}
 	c := &Config{
 		Connectors: []ConnectorConfig{{
@@ -234,19 +258,91 @@ func FromEnv() (*Config, error) {
 			AppTokenEnv: "SLACK_APP_TOKEN",
 			BotTokenEnv: "SLACK_BOT_TOKEN",
 		}},
-		Alerters: []AlerterConfig{{
-			Name:        "ops-slack",
-			Type:        "slack",
-			BotTokenEnv: "SLACK_BOT_TOKEN",
-			Channels:    []string{alertChan},
-		}},
-		Store: StoreConfig{Path: defaultStorePath()},
+		Alerters: alerters,
+		Store:    StoreConfig{Path: defaultStorePath()},
 	}
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("env config: %w", err)
 	}
 	return c, nil
+}
+
+// emailFromEnv returns a fully-populated email AlerterConfig when
+// SMTP_HOST is set, nil when unset. Partially-set env (host present
+// but a required companion missing) is an error so operators get a
+// specific startup failure rather than a silent skip.
+func emailFromEnv() (*AlerterConfig, error) {
+	host := os.Getenv("SMTP_HOST")
+	if host == "" {
+		return nil, nil
+	}
+	portStr := os.Getenv("SMTP_PORT")
+	if portStr == "" {
+		return nil, errors.New("SMTP_HOST is set but SMTP_PORT is empty — required for email alerter")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		return nil, fmt.Errorf("SMTP_PORT %q is not a valid port — required for email alerter", portStr)
+	}
+	if os.Getenv("SMTP_USERNAME") == "" {
+		return nil, errors.New("SMTP_HOST is set but SMTP_USERNAME is empty — required for email alerter")
+	}
+	if os.Getenv("SMTP_PASSWORD") == "" {
+		return nil, errors.New("SMTP_HOST is set but SMTP_PASSWORD is empty — required for email alerter")
+	}
+	from := os.Getenv("SMTP_FROM")
+	if from == "" {
+		return nil, errors.New("SMTP_HOST is set but SMTP_FROM is empty — required for email alerter")
+	}
+	toRaw := os.Getenv("SMTP_TO")
+	if toRaw == "" {
+		return nil, errors.New("SMTP_HOST is set but SMTP_TO is empty — required for email alerter")
+	}
+	to := splitCSV(toRaw)
+	if len(to) == 0 {
+		return nil, errors.New("SMTP_TO contained no addresses after parsing")
+	}
+	return &AlerterConfig{
+		Name:        "ops-email",
+		Type:        "email",
+		SMTPHost:    host,
+		SMTPPort:    port,
+		UserEnv:     "SMTP_USERNAME",
+		PasswordEnv: "SMTP_PASSWORD",
+		From:        from,
+		To:          to,
+	}, nil
+}
+
+// pagerdutyFromEnv returns a PagerDuty AlerterConfig when
+// PAGERDUTY_ROUTING_KEY is set, nil when unset. The optional
+// PAGERDUTY_SEVERITIES allow-list defaults to ["critical"] inside the
+// alerter package when empty here.
+func pagerdutyFromEnv() (*AlerterConfig, error) {
+	if os.Getenv("PAGERDUTY_ROUTING_KEY") == "" {
+		return nil, nil
+	}
+	return &AlerterConfig{
+		Name:          "ops-pagerduty",
+		Type:          "pagerduty",
+		RoutingKeyEnv: "PAGERDUTY_ROUTING_KEY",
+		Severities:    splitCSV(os.Getenv("PAGERDUTY_SEVERITIES")),
+	}, nil
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // defaultStorePath returns /var/lib/foghorn/foghorn.db when that
@@ -362,6 +458,10 @@ func (c *Config) Validate() error {
 			}
 			if ac.From == "" || len(ac.To) == 0 {
 				return fmt.Errorf("alerters[%d] %q: from and to required", i, ac.Name)
+			}
+		case "pagerduty":
+			if ac.RoutingKeyEnv == "" {
+				return fmt.Errorf("alerters[%d] %q: routing_key_env required", i, ac.Name)
 			}
 		default:
 			return fmt.Errorf("alerters[%d] %q: unknown type %q", i, ac.Name, ac.Type)
