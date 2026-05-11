@@ -1,8 +1,11 @@
 package slack
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/slack-go/slack/slackevents"
 
 	"github.com/alexmchughdev/foghorn/internal/connector"
 )
@@ -205,6 +208,158 @@ func TestRequiredScopes_matchManifest(t *testing.T) {
 	if !equalStrings(RequiredScopes, want) {
 		t.Errorf("RequiredScopes = %v, want %v", RequiredScopes, want)
 	}
+}
+
+func TestResolveExclusions(t *testing.T) {
+	// IDs follow Slack's real shape (C + 10 uppercase alphanum) so the
+	// looksLikeChannelID heuristic accepts them.
+	known := []channelMeta{
+		{ID: "C100AAAAAAA", Name: "deploys"},
+		{ID: "C200BBBBBBB", Name: "health"},
+		{ID: "C300CCCCCCC", Name: "alerts"},
+	}
+
+	t.Run("name resolves to id with owner", func(t *testing.T) {
+		got := resolveExclusions(
+			[]ExcludedChannel{{Channel: "#alerts", Owner: "ops-slack"}},
+			known,
+		)
+		want := map[string]string{"C300CCCCCCC": "ops-slack"}
+		if !equalStringMaps(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("bare name resolves", func(t *testing.T) {
+		got := resolveExclusions(
+			[]ExcludedChannel{{Channel: "alerts", Owner: "ops-slack"}},
+			known,
+		)
+		if got["C300CCCCCCC"] != "ops-slack" {
+			t.Errorf("got %v", got)
+		}
+	})
+
+	t.Run("known id passes through", func(t *testing.T) {
+		got := resolveExclusions(
+			[]ExcludedChannel{{Channel: "C300CCCCCCC", Owner: "ops-slack"}},
+			known,
+		)
+		if got["C300CCCCCCC"] != "ops-slack" {
+			t.Errorf("got %v", got)
+		}
+	})
+
+	t.Run("unknown name is silently dropped", func(t *testing.T) {
+		got := resolveExclusions(
+			[]ExcludedChannel{{Channel: "#ghost", Owner: "ops"}},
+			known,
+		)
+		if len(got) != 0 {
+			t.Errorf("expected empty, got %v", got)
+		}
+	})
+
+	t.Run("unknown id is silently dropped", func(t *testing.T) {
+		got := resolveExclusions(
+			[]ExcludedChannel{{Channel: "C999XXXXXX", Owner: "ops"}},
+			known,
+		)
+		if len(got) != 0 {
+			t.Errorf("expected empty, got %v", got)
+		}
+	})
+
+	t.Run("mixed entries", func(t *testing.T) {
+		got := resolveExclusions(
+			[]ExcludedChannel{
+				{Channel: "#alerts", Owner: "ops-slack"},
+				{Channel: "C100AAAAAAA", Owner: "secondary"},
+			},
+			known,
+		)
+		want := map[string]string{"C300CCCCCCC": "ops-slack", "C100AAAAAAA": "secondary"}
+		if !equalStringMaps(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+}
+
+func TestForward_dropsBotSelfMessages(t *testing.T) {
+	c, err := New(Options{Name: "test", AppToken: "xapp-1", BotToken: "xoxb-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.botUserID = "U_BOT"
+	c.botID = "B_BOT"
+	c.monitor = map[string]struct{}{"C1": {}}
+
+	out := make(chan connector.Message, 4)
+	ctx := context.Background()
+
+	// Case 1: bot's own user_id (typical bot_message shape).
+	c.forward(ctx, &slackevents.MessageEvent{
+		Channel:   "C1",
+		User:      "U_BOT",
+		BotID:     "B_BOT",
+		TimeStamp: "1700000000.000000",
+		Text:      "alert payload",
+		SubType:   "bot_message",
+	}, out)
+	if got := drain(out); len(got) != 0 {
+		t.Errorf("bot user_id should drop, got %d messages: %+v", len(got), got)
+	}
+
+	// Case 2: m.User empty but BotID matches (webhook-style post).
+	c.forward(ctx, &slackevents.MessageEvent{
+		Channel:   "C1",
+		BotID:     "B_BOT",
+		TimeStamp: "1700000001.000000",
+		Text:      "alert payload",
+		SubType:   "bot_message",
+	}, out)
+	if got := drain(out); len(got) != 0 {
+		t.Errorf("bot bot_id should drop, got %d messages: %+v", len(got), got)
+	}
+
+	// Case 3: legitimate user post should pass through.
+	c.forward(ctx, &slackevents.MessageEvent{
+		Channel:   "C1",
+		User:      "U_OTHER",
+		TimeStamp: "1700000002.000000",
+		Text:      "hello",
+	}, out)
+	got := drain(out)
+	if len(got) != 1 || got[0].SenderID != "U_OTHER" || got[0].Text != "hello" {
+		t.Errorf("legitimate user post should pass, got %+v", got)
+	}
+}
+
+// drain reads everything currently available on the channel without
+// blocking. Used by forward() tests to assert "exactly N messages
+// were emitted" deterministically.
+func drain(ch <-chan connector.Message) []connector.Message {
+	var out []connector.Message
+	for {
+		select {
+		case m := <-ch:
+			out = append(out, m)
+		default:
+			return out
+		}
+	}
+}
+
+func equalStringMaps(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func equalStrings(a, b []string) bool {

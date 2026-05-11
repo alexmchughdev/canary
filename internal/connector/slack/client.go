@@ -38,7 +38,26 @@ type Client struct {
 	sock     *socketmode.Client
 	botToken string
 	monitor  map[string]struct{}
-	log      *slog.Logger
+	// botUserID is the authenticated bot's user_id (U...). botID is the
+	// bot's bot_id (B...). Both are captured by ValidateAccess from
+	// auth.test and used by forward() to drop the bot's own posts
+	// before they reach the worker, preventing alert-channel recursion.
+	//
+	// SECURITY: these contain the identity of the authenticated bot.
+	// Not a credential, but identifying — don't log raw. Log the
+	// team/user names returned via ValidationResult instead.
+	botUserID string
+	botID     string
+	log       *slog.Logger
+}
+
+// ExcludedChannel is one channel a connector must not monitor, along
+// with the alerter that owns it (used for actionable error messages).
+type ExcludedChannel struct {
+	// Channel is the channel ID or name as written in alerter config.
+	Channel string
+	// Owner is the alerter's configured name.
+	Owner string
 }
 
 type Options struct {
@@ -93,34 +112,100 @@ type channelMeta struct {
 // accessible channels via conversations.list. Each entry may be a
 // channel ID (passes through), a name with leading '#', or a bare name.
 // An empty desired list means "monitor every channel the bot is in".
-// All unresolved names are reported together so the user can fix them
-// in one pass instead of reboot-by-reboot.
-func (c *Client) Bootstrap(ctx context.Context, desired []string) error {
+//
+// excluded is the union of channels configured as alert destinations
+// across all Slack alerters; entries here are subtracted from the
+// auto-monitor set, and explicit-monitor entries that overlap return
+// a startup error naming the channel and the alerter responsible.
+// This prevents the worker from ingesting its own alerter posts.
+//
+// All unresolved-name and alert-destination errors are reported
+// together so the user can fix everything in one pass instead of
+// reboot-by-reboot.
+func (c *Client) Bootstrap(ctx context.Context, desired []string, excluded []ExcludedChannel) error {
 	botChans, err := c.listBotChannels(ctx)
 	if err != nil {
 		return fmt.Errorf("list bot channels: %w", err)
 	}
 
+	excludedByID := resolveExclusions(excluded, botChans)
+	nameByID := make(map[string]string, len(botChans))
+	for _, ch := range botChans {
+		nameByID[ch.ID] = ch.Name
+	}
+
 	if len(desired) == 0 {
 		ids := make([]string, 0, len(botChans))
 		for _, ch := range botChans {
+			if _, isAlert := excludedByID[ch.ID]; isAlert {
+				continue
+			}
 			ids = append(ids, ch.ID)
 		}
 		c.monitor = idSet(ids)
 		c.log.Info("slack auto-monitor",
-			"connector", c.name, "channels", len(ids))
+			"connector", c.name, "channels", len(ids), "excluded", len(excludedByID))
 		return nil
 	}
 
 	resolved, missing := resolveMonitor(desired, botChans)
-	if len(missing) > 0 {
-		return fmt.Errorf("channel(s) not found or bot not invited: %s — invite the bot in each channel and retry",
-			strings.Join(missing, ", "))
+
+	var conflicts []string
+	keep := make([]string, 0, len(resolved))
+	for _, id := range resolved {
+		if owner, isAlert := excludedByID[id]; isAlert {
+			conflicts = append(conflicts,
+				fmt.Sprintf("#%s (%s) is the destination for alerter %q", nameByID[id], id, owner))
+			continue
+		}
+		keep = append(keep, id)
 	}
-	c.monitor = idSet(resolved)
+
+	var problems []string
+	if len(missing) > 0 {
+		problems = append(problems,
+			"channel(s) not found or bot not invited: "+strings.Join(missing, ", "))
+	}
+	if len(conflicts) > 0 {
+		problems = append(problems,
+			"cannot monitor alert destination(s): "+strings.Join(conflicts, "; "))
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("connector %q monitor: %s", c.name, strings.Join(problems, "; "))
+	}
+
+	c.monitor = idSet(keep)
 	c.log.Info("slack monitor resolved",
-		"connector", c.name, "channels", len(resolved))
+		"connector", c.name, "channels", len(keep))
 	return nil
+}
+
+// resolveExclusions builds a map from channel ID to owning alerter
+// name, given the alerter-destination list and the bot's known
+// channels. Entries that don't resolve (malformed IDs, or names not
+// in the bot's channel set) are dropped silently: they can't be in
+// c.monitor anyway, so there's nothing to exclude.
+func resolveExclusions(excluded []ExcludedChannel, known []channelMeta) map[string]string {
+	byName := make(map[string]string, len(known))
+	knownIDs := make(map[string]struct{}, len(known))
+	for _, ch := range known {
+		byName[ch.Name] = ch.ID
+		knownIDs[ch.ID] = struct{}{}
+	}
+	out := make(map[string]string, len(excluded))
+	for _, e := range excluded {
+		if looksLikeChannelID(e.Channel) {
+			if _, ok := knownIDs[e.Channel]; ok {
+				out[e.Channel] = e.Owner
+			}
+			continue
+		}
+		name := strings.TrimPrefix(e.Channel, "#")
+		if id, ok := byName[name]; ok {
+			out[id] = e.Owner
+		}
+	}
+	return out
 }
 
 func idSet(ids []string) map[string]struct{} {
@@ -210,6 +295,11 @@ func (c *Client) ValidateAccess(ctx context.Context) (*ValidationResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("auth.test: %w", err)
 	}
+	// Capture the bot's identity so forward() can drop its own posts.
+	// Runs before any goroutine starts the stream, so the filter is
+	// always populated by the time forward() is called.
+	c.botUserID = auth.UserID
+	c.botID = auth.BotID
 
 	granted, err := c.grantedScopes(ctx)
 	if err != nil {
@@ -453,6 +543,19 @@ func (c *Client) handle(ctx context.Context, evt socketmode.Event, out chan<- co
 // full message archive.
 func (c *Client) forward(ctx context.Context, m *slackevents.MessageEvent, out chan<- connector.Message) {
 	if m.SubType != "" && m.SubType != "bot_message" {
+		return
+	}
+	// Drop the bot's own posts. The alert-channel exclusion in
+	// Bootstrap closes the dominant feedback loop; this filter closes
+	// every other path (misconfigured manifests, future features
+	// posting to monitored channels, third-party tools sharing the bot
+	// token). Either ID matching is enough — m.User is set on normal
+	// bot_message events; m.BotID covers webhook-style posts where
+	// m.User may be empty.
+	if m.User != "" && m.User == c.botUserID {
+		return
+	}
+	if m.BotID != "" && m.BotID == c.botID {
 		return
 	}
 	if _, want := c.monitor[m.Channel]; !want {
