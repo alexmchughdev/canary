@@ -8,23 +8,101 @@ Foghorn watches Slack channels where services post status messages, learns what 
 
 ## Quick start
 
+### 1. Create the Slack app
+
+Foghorn ships a [Slack app manifest](slack/manifest.yaml) that defines every scope, event subscription, and setting the bot needs. To install:
+
+1. Go to <https://api.slack.com/apps> and click **Create New App** then **From an app manifest**.
+2. Pick your workspace.
+3. Paste the contents of [`slack/manifest.yaml`](slack/manifest.yaml).
+4. Confirm and create the app.
+
+### 2. Generate tokens
+
+Two Slack tokens are required, plus a bearer token of your choice for Foghorn's HTTP API.
+
+- **App-Level Token** (`xapp-...`): on the app's **Basic Information** page, scroll to *App-Level Tokens* and generate one with the `connections:write` scope. This drives the Socket Mode WebSocket.
+- **Bot User OAuth Token** (`xoxb-...`): on the **Install App** page, install to the workspace, then copy the bot token shown.
+- **API token**: any secret you want Foghorn's read API to accept. Generate one with `openssl rand -hex 32`.
+
+### 3. Invite the bot to channels
+
+In every Slack channel you want Foghorn to monitor:
+
+    /invite @Foghorn
+
+Foghorn auto-discovers channels the bot is a member of at boot; you don't need to copy channel IDs into config unless you want to restrict to a subset.
+
+### 4. Build and run
+
     git clone https://github.com/alexmchughdev/foghorn
     cd foghorn
     make build
 
-Copy the example config and point it at your channels:
-
-    cp examples/foghorn.yaml foghorn.yaml
-    $EDITOR foghorn.yaml      # set channel IDs, env-var names, alerter sinks
-
-Export the secrets and run:
-
     export SLACK_APP_TOKEN=xapp-...
     export SLACK_BOT_TOKEN=xoxb-...
     export FOGHORN_API_TOKEN=...
-    ./foghorn -config foghorn.yaml
 
-`SLACK_*` tokens come from a Slack app with Socket Mode enabled and the bot invited to every monitored channel. `FOGHORN_API_TOKEN` is whatever bearer secret you want the read API to accept.
+    cp examples/foghorn.yaml foghorn.yaml   # optional: tweak detection knobs
+    ./foghorn run -config foghorn.yaml
+
+To verify the Slack app, scopes, and channel access without starting the worker:
+
+    ./foghorn check -config foghorn.yaml
+
+By default Foghorn monitors every channel the bot is in. To restrict to a subset, set `connectors[].monitor` in `foghorn.yaml` to a list of channel names (`#deploys`) or IDs (`C0B3Q17FZ2L`):
+
+```yaml
+connectors:
+  - name: prod-slack
+    type: slack
+    app_token_env: SLACK_APP_TOKEN
+    bot_token_env: SLACK_BOT_TOKEN
+    monitor:
+      - "#deploys"
+      - "#health"
+```
+
+## Deployment
+
+Pre-built multi-architecture images are published to GitHub Container Registry on every push to `main` and on tagged releases. The image is `linux/amd64` and `linux/arm64`.
+
+### Docker
+
+```bash
+docker run -d \
+  --name foghorn \
+  -e SLACK_BOT_TOKEN=xoxb-... \
+  -e SLACK_APP_TOKEN=xapp-... \
+  -e FOGHORN_API_TOKEN=$(openssl rand -hex 32) \
+  -v $(pwd)/data:/var/lib/foghorn \
+  -p 8080:8080 -p 9090:9090 \
+  ghcr.io/alexmchughdev/foghorn:latest
+```
+
+Image tags:
+
+- `latest`: current `main`.
+- `sha-<full-git-sha>`: any pushed commit.
+- `<tag>`: any pushed git tag (e.g. release tags).
+
+### Docker Compose
+
+A reference [`docker-compose.yml`](docker-compose.yml) ships at the repo root for the common single-host case:
+
+```bash
+git clone https://github.com/alexmchughdev/foghorn
+cd foghorn
+cp .env.example .env
+$EDITOR .env             # fill in the three tokens
+docker compose up -d
+```
+
+The compose file mounts `./data` for the SQLite store and exposes both the API and metrics ports. `.env.example` lists every required variable and shows how to generate the API bearer token.
+
+### Kubernetes
+
+Reference manifests live in [`deploy/k8s/`](deploy/k8s/) (Deployment, Service, PVC, ConfigMap, ExternalSecret for token wiring) and an ArgoCD `Application` in [`deploy/argocd/`](deploy/argocd/). The Deployment runs as non-root, mounts the SQLite store on a PVC, and exposes both the API and metrics ports.
 
 ## Architecture
 
@@ -176,6 +254,12 @@ A read API plus one mutating endpoint, on a separate port from metrics.
 | POST | `/relearn?channel=C123` | bearer | Drop and rebuild clusters for one channel from the current lookback window. |
 
 Bearer auth uses the env var named by `api.token_env` (defaulting to `FOGHORN_API_TOKEN`). The binary refuses to start if that variable is unset, so the API never accidentally serves authenticated endpoints with an empty token.
+
+## Operations
+
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) covers what to do when something looks off in production: tuning the cluster engine against real corpora, the cross-boot alert lifecycle, troubleshooting heuristics, and known issues with proposed fixes.
+
+For pre-deployment validation, `foghorn check -config foghorn.yaml` runs the same Slack-auth, scope, and channel-access checks the worker does at boot, exits 0 on success or non-zero with an actionable error. Suitable for CI and pre-rollout smoke tests; doesn't open Socket Mode, doesn't touch the SQLite store.
 
 ## Package layout
 

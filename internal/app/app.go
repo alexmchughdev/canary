@@ -478,13 +478,9 @@ func (a *App) buildAndInstallClusters(ctx context.Context, channelID string, msg
 // since their cluster_id rows are about to vanish. Senders and
 // frequency alerts are untouched.
 func (a *App) RelearnChannel(ctx context.Context, channelID string) error {
-	if _, ok := a.cfg.MonitoredChannels()[channelID]; !ok {
-		return fmt.Errorf("channel %s is not monitored", channelID)
-	}
-
 	conn := a.connectorForChannel(channelID)
 	if conn == nil {
-		return fmt.Errorf("channel %s has no live connector", channelID)
+		return fmt.Errorf("channel %s is not monitored", channelID)
 	}
 	since := time.Now().Add(-a.cfg.Learning.Lookback)
 	all, err := conn.History(ctx, since)
@@ -720,26 +716,29 @@ func (a *App) rebuildBaselinesOnBoot(ctx context.Context) error {
 }
 
 // connectorForChannel returns the connector that monitors channelID,
-// or nil if no configured connector matches. Multiple connectors
-// monitoring the same channel isn't a supported topology; the first
-// match wins.
+// or nil if no live connector claims it. Asks each connector for its
+// resolved channel set rather than reading config, because config may
+// store names that haven't yet been resolved to IDs. Multiple
+// connectors monitoring the same channel isn't a supported topology;
+// the first match wins.
 func (a *App) connectorForChannel(channelID string) connector.Connector {
-	name := a.cfg.ConnectorForChannel(channelID)
-	if name == "" {
-		return nil
-	}
 	for _, c := range a.conns {
-		if c.Name() == name {
-			return c
+		for _, id := range c.Monitored() {
+			if id == channelID {
+				return c
+			}
 		}
 	}
 	return nil
 }
 
-// connectorNameForChannel returns the configured connector name that
-// owns channelID, or "" if no match. Used to stamp outbound alerts.
+// connectorNameForChannel returns the live connector name that owns
+// channelID, or "" if no match. Used to stamp outbound alerts.
 func (a *App) connectorNameForChannel(channelID string) string {
-	return a.cfg.ConnectorForChannel(channelID)
+	if c := a.connectorForChannel(channelID); c != nil {
+		return c.Name()
+	}
+	return ""
 }
 
 // frequencyAlert builds the typed alert for a drift/offline transition.

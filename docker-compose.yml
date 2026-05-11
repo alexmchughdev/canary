@@ -1,0 +1,10 @@
+services:
+  foghorn:
+    image: ghcr.io/alexmchughdev/foghorn:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/var/lib/foghorn
+    ports:
+      - "8080:8080"   # HTTP API
+      - "9090:9090"   # Prometheus metrics

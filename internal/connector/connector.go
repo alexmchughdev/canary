@@ -16,6 +16,13 @@ type Connector interface {
 	// Platform is the platform family ("slack").
 	Platform() string
 
+	// Monitored returns the resolved channel IDs this connector is
+	// monitoring. Populated at boot from config (after name resolution
+	// and any auto-discovery). The worker uses this rather than config
+	// when looking up which connector owns a channel, since config
+	// entries may be names rather than IDs.
+	Monitored() []string
+
 	// History returns messages from monitored channels since `since`,
 	// oldest first.
 	History(ctx context.Context, since time.Time) ([]Message, error)

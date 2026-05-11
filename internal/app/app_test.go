@@ -16,11 +16,13 @@ import (
 )
 
 type fakeConnector struct {
-	history []connector.Message
+	history   []connector.Message
+	monitored []string
 }
 
-func (f *fakeConnector) Name() string     { return "fake" }
-func (f *fakeConnector) Platform() string { return "fake" }
+func (f *fakeConnector) Name() string         { return "fake" }
+func (f *fakeConnector) Platform() string     { return "fake" }
+func (f *fakeConnector) Monitored() []string  { return f.monitored }
 func (f *fakeConnector) History(_ context.Context, _ time.Time) ([]connector.Message, error) {
 	return f.history, nil
 }

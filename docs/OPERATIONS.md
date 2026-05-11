@@ -71,6 +71,10 @@ A non-zero counter on this metric is normal after restarts and indicates the ded
 
 A side-effect is that `senders.msg_count` accumulates across boots: the same backfilled message is ingested once per boot. This is by design and only affects the counter; nothing in detection logic uses `msg_count` for thresholds.
 
+### Verifying bot channel membership
+
+Slack's default channel Members panel hides app and bot members from the user-facing view, so the bot can appear absent from a channel it's actually in. To verify whether the Foghorn bot is a member of a given channel, open the channel's settings and use the **Integrations** tab — that's the authoritative UI view for bot memberships. The API equivalents are `users.conversations` (returns only memberships) or `conversations.list` with the `is_member` field; both will agree with Integrations. Don't take a missing entry in the default Members panel as evidence the bot isn't joined.
+
 ### State machine flap on synthetic data
 
 The frequency detector ticks every 30 seconds (constant `tickInterval` in `internal/app/app.go`). If a sender's baseline mean inter-arrival is much smaller than 30 seconds (typical for a synth generator), every tick finds the sender silent past the offline threshold and produces a state transition. The result is a healthy → offline → recovering → healthy flap visible in logs and Slack alerts.
@@ -89,3 +93,7 @@ Real workloads with service-status cadences in the seconds-to-minutes range don'
 | Many `unknown_pattern` alerts on a channel that should be settled | `match_threshold` may be too high for this channel's corpus. Try `POST /relearn?channel=...` first to rule out a stale cluster. |
 | API returns 401 | `FOGHORN_API_TOKEN` env var unset, or wrong token in `Authorization: Bearer ...`. Foghorn refuses to start if the env var is empty, so the API only ever serves with a populated token. |
 | `backfill_overlap` counter climbing forever | Means Slack is redelivering events well past the expected catch-up window. Worth investigating connection stability. |
+
+## Known verification gaps
+
+The scope-mismatch error path in `ValidateAccess` is covered by unit tests but has not been exercised against a live Slack workspace. The unit tests pin `RequiredScopes` against `slack/manifest.yaml`, so the mismatch case is structurally tested. Verifying the live error message would require rotating the bot token twice (once to remove a scope, once to restore), which is not yet automated.
