@@ -77,4 +77,88 @@ func TestClient_NameAndPlatform(t *testing.T) {
 	if got := c.Platform(); got != "slack" {
 		t.Errorf("Platform = %q, want %q", got, "slack")
 	}
+	if got := c.Monitored(); len(got) != 0 {
+		t.Errorf("Monitored should be empty before Bootstrap, got %v", got)
+	}
+}
+
+func TestLooksLikeChannelID(t *testing.T) {
+	cases := map[string]bool{
+		"C0B3Q17FZ2L":  true,  // real public channel id
+		"G01234ABCDE":  true,  // real private channel id
+		"C12345678":    true,  // 9-char threshold
+		"#deploys":     false, // leading hash is a name marker
+		"deploys":      false, // lowercase name
+		"Cdeploys":     false, // lowercase tail
+		"":             false,
+		"C1234567":     false, // too short
+		"D0B3Q17FZ2L":  false, // DM, not a channel
+		"C0B3Q17FZ2l":  false, // lowercase digit at end
+	}
+	for in, want := range cases {
+		if got := looksLikeChannelID(in); got != want {
+			t.Errorf("looksLikeChannelID(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestResolveMonitor(t *testing.T) {
+	known := []channelMeta{
+		{ID: "C100", Name: "deploys"},
+		{ID: "C200", Name: "health"},
+		{ID: "C300", Name: "alerts"},
+	}
+
+	t.Run("names with and without hash resolve", func(t *testing.T) {
+		got, missing := resolveMonitor([]string{"#deploys", "health"}, known)
+		if len(missing) != 0 {
+			t.Fatalf("unexpected missing: %v", missing)
+		}
+		want := []string{"C100", "C200"}
+		if !equalStrings(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("channel ids pass through", func(t *testing.T) {
+		got, missing := resolveMonitor([]string{"C999AAAAAAA", "#deploys"}, known)
+		if len(missing) != 0 {
+			t.Fatalf("unexpected missing: %v", missing)
+		}
+		want := []string{"C999AAAAAAA", "C100"}
+		if !equalStrings(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("unknown names aggregate into missing", func(t *testing.T) {
+		got, missing := resolveMonitor([]string{"#deploys", "#missing", "ghost"}, known)
+		want := []string{"C100"}
+		if !equalStrings(got, want) {
+			t.Errorf("resolved = %v, want %v", got, want)
+		}
+		wantMissing := []string{"#missing", "#ghost"}
+		if !equalStrings(missing, wantMissing) {
+			t.Errorf("missing = %v, want %v", missing, wantMissing)
+		}
+	})
+
+	t.Run("empty input returns empty", func(t *testing.T) {
+		got, missing := resolveMonitor(nil, known)
+		if len(got) != 0 || len(missing) != 0 {
+			t.Errorf("expected empty: got=%v missing=%v", got, missing)
+		}
+	})
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

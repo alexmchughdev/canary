@@ -285,9 +285,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("connectors[%d] %q: unknown type %q (only \"slack\" is supported)",
 					i, cc.Name, cc.Type)
 			}
-			if len(cc.Monitor) == 0 {
-				return fmt.Errorf("connectors[%d] %q: monitor must list at least one channel id", i, cc.Name)
-			}
+			// Empty monitor is allowed: the connector auto-discovers
+			// every channel the bot is a member of at startup.
 		}
 	}
 	if c.Channels.AlertTo == "" && len(c.Alerters) == 0 {

@@ -44,7 +44,7 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	conns, err := app.BuildConnectors(cfg, log)
+	conns, err := app.BuildConnectors(ctx, cfg, log)
 	if err != nil {
 		return fmt.Errorf("connectors: %w", err)
 	}

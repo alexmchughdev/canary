@@ -317,17 +317,6 @@ alerters:
     bot_token_env: SLACK_BOT_TOKEN
     channels: [C1]
 `,
-		"empty monitor": `
-connectors:
-  - name: a
-    type: slack
-    monitor: []
-alerters:
-  - name: x
-    type: slack
-    bot_token_env: SLACK_BOT_TOKEN
-    channels: [C1]
-`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -335,6 +324,32 @@ alerters:
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+// TestLoad_emptyMonitorAllowed pins the auto-discover contract: a
+// connector with no monitor list parses cleanly and is left for the
+// connector itself to fill in at boot.
+func TestLoad_emptyMonitorAllowed(t *testing.T) {
+	body := `
+connectors:
+  - name: a
+    type: slack
+alerters:
+  - name: x
+    type: slack
+    bot_token_env: SLACK_BOT_TOKEN
+    channels: [C1]
+`
+	c, err := Load(writeTmp(t, body))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(c.Connectors) != 1 {
+		t.Fatalf("connectors len=%d", len(c.Connectors))
+	}
+	if len(c.Connectors[0].Monitor) != 0 {
+		t.Errorf("monitor should be empty, got %+v", c.Connectors[0].Monitor)
 	}
 }
 

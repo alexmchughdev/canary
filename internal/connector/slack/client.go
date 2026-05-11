@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -19,18 +20,18 @@ import (
 const platform = "slack"
 
 type Client struct {
-	name    string
-	api     *slack.Client
-	sock    *socketmode.Client
-	monitor map[string]struct{}
-	log     *slog.Logger
+	name     string
+	api      *slack.Client
+	sock     *socketmode.Client
+	botToken string
+	monitor  map[string]struct{}
+	log      *slog.Logger
 }
 
 type Options struct {
 	Name     string
 	AppToken string
 	BotToken string
-	Monitor  map[string]struct{}
 	Logger   *slog.Logger
 }
 
@@ -45,16 +46,153 @@ func New(opts Options) (*Client, error) {
 	api := slack.New(opts.BotToken, slack.OptionAppLevelToken(opts.AppToken))
 	sock := socketmode.New(api)
 	return &Client{
-		name:    opts.Name,
-		api:     api,
-		sock:    sock,
-		monitor: opts.Monitor,
-		log:     log,
+		name:     opts.Name,
+		api:      api,
+		sock:     sock,
+		botToken: opts.BotToken,
+		monitor:  map[string]struct{}{},
+		log:      log,
 	}, nil
 }
 
 func (c *Client) Name() string     { return c.name }
 func (c *Client) Platform() string { return platform }
+
+// Monitored returns the resolved channel IDs this client streams from,
+// populated by Bootstrap. Sorted for stable iteration in tests and logs.
+func (c *Client) Monitored() []string {
+	out := make([]string, 0, len(c.monitor))
+	for id := range c.monitor {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// channelMeta is the slim view of a Slack channel we keep around for
+// name-to-ID resolution and membership checks.
+type channelMeta struct {
+	ID   string
+	Name string
+}
+
+// Bootstrap resolves the desired monitor list against the bot's
+// accessible channels via conversations.list. Each entry may be a
+// channel ID (passes through), a name with leading '#', or a bare name.
+// An empty desired list means "monitor every channel the bot is in".
+// All unresolved names are reported together so the user can fix them
+// in one pass instead of reboot-by-reboot.
+func (c *Client) Bootstrap(ctx context.Context, desired []string) error {
+	botChans, err := c.listBotChannels(ctx)
+	if err != nil {
+		return fmt.Errorf("list bot channels: %w", err)
+	}
+
+	if len(desired) == 0 {
+		ids := make([]string, 0, len(botChans))
+		for _, ch := range botChans {
+			ids = append(ids, ch.ID)
+		}
+		c.monitor = idSet(ids)
+		c.log.Info("slack auto-monitor",
+			"connector", c.name, "channels", len(ids))
+		return nil
+	}
+
+	resolved, missing := resolveMonitor(desired, botChans)
+	if len(missing) > 0 {
+		return fmt.Errorf("channel(s) not found or bot not invited: %s — invite the bot in each channel and retry",
+			strings.Join(missing, ", "))
+	}
+	c.monitor = idSet(resolved)
+	c.log.Info("slack monitor resolved",
+		"connector", c.name, "channels", len(resolved))
+	return nil
+}
+
+func idSet(ids []string) map[string]struct{} {
+	s := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		s[id] = struct{}{}
+	}
+	return s
+}
+
+// listBotChannels pages conversations.list and returns the channels the
+// bot is a member of. Public and private channels both qualify; DMs and
+// MPIMs are intentionally excluded since they aren't valid heartbeat
+// channels.
+func (c *Client) listBotChannels(ctx context.Context) ([]channelMeta, error) {
+	var out []channelMeta
+	cursor := ""
+	for {
+		chans, next, err := c.api.GetConversationsContext(ctx, &slack.GetConversationsParameters{
+			Types:           []string{"public_channel", "private_channel"},
+			ExcludeArchived: true,
+			Limit:           200,
+			Cursor:          cursor,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, ch := range chans {
+			if ch.IsMember {
+				out = append(out, channelMeta{ID: ch.ID, Name: ch.Name})
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
+}
+
+// resolveMonitor classifies each desired entry as either a Slack channel
+// ID (passes through unchanged) or a channel name (stripped of an
+// optional leading '#' and looked up in known). Returns the resolved IDs
+// in input order plus the friendly-formatted names of any entries that
+// didn't resolve — the caller renders one aggregate error.
+func resolveMonitor(desired []string, known []channelMeta) (resolved []string, missing []string) {
+	byName := make(map[string]string, len(known))
+	for _, ch := range known {
+		byName[ch.Name] = ch.ID
+	}
+	for _, d := range desired {
+		if looksLikeChannelID(d) {
+			resolved = append(resolved, d)
+			continue
+		}
+		name := strings.TrimPrefix(d, "#")
+		if id, ok := byName[name]; ok {
+			resolved = append(resolved, id)
+			continue
+		}
+		missing = append(missing, "#"+name)
+	}
+	return resolved, missing
+}
+
+// looksLikeChannelID matches Slack's public/private channel ID shape:
+// starts with C (public) or G (private), followed by uppercase
+// alphanumeric, total length 9 or more. Lowercase letters can't appear
+// in real IDs, so "deploys" and "Cdeploys" both fall through to name
+// resolution.
+func looksLikeChannelID(s string) bool {
+	if len(s) < 9 {
+		return false
+	}
+	if s[0] != 'C' && s[0] != 'G' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		b := s[i]
+		if !(b >= 'A' && b <= 'Z') && !(b >= '0' && b <= '9') {
+			return false
+		}
+	}
+	return true
+}
 
 // History fans conversations.history across each monitored channel and
 // returns the merged result sorted oldest-first.
