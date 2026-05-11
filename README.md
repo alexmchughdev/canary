@@ -44,7 +44,11 @@ Foghorn auto-discovers channels the bot is a member of at boot; you don't need t
     export FOGHORN_API_TOKEN=...
 
     cp examples/foghorn.yaml foghorn.yaml   # optional: tweak detection knobs
-    ./foghorn -config foghorn.yaml
+    ./foghorn run -config foghorn.yaml
+
+To verify the Slack app, scopes, and channel access without starting the worker:
+
+    ./foghorn check -config foghorn.yaml
 
 By default Foghorn monitors every channel the bot is in. To restrict to a subset, set `connectors[].monitor` in `foghorn.yaml` to a list of channel names (`#deploys`) or IDs (`C0B3Q17FZ2L`):
 
@@ -250,6 +254,12 @@ A read API plus one mutating endpoint, on a separate port from metrics.
 | POST | `/relearn?channel=C123` | bearer | Drop and rebuild clusters for one channel from the current lookback window. |
 
 Bearer auth uses the env var named by `api.token_env` (defaulting to `FOGHORN_API_TOKEN`). The binary refuses to start if that variable is unset, so the API never accidentally serves authenticated endpoints with an empty token.
+
+## Operations
+
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) covers what to do when something looks off in production: tuning the cluster engine against real corpora, the cross-boot alert lifecycle, troubleshooting heuristics, and known issues with proposed fixes.
+
+For pre-deployment validation, `foghorn check -config foghorn.yaml` runs the same Slack-auth, scope, and channel-access checks the worker does at boot, exits 0 on success or non-zero with an actionable error. Suitable for CI and pre-rollout smoke tests; doesn't open Socket Mode, doesn't touch the SQLite store.
 
 ## Package layout
 
