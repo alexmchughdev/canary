@@ -71,6 +71,10 @@ A non-zero counter on this metric is normal after restarts and indicates the ded
 
 A side-effect is that `senders.msg_count` accumulates across boots: the same backfilled message is ingested once per boot. This is by design and only affects the counter; nothing in detection logic uses `msg_count` for thresholds.
 
+### Verifying bot channel membership
+
+Slack's default channel Members panel hides app and bot members from the user-facing view, so the bot can appear absent from a channel it's actually in. To verify whether the Foghorn bot is a member of a given channel, open the channel's settings and use the **Integrations** tab — that's the authoritative UI view for bot memberships. The API equivalents are `users.conversations` (returns only memberships) or `conversations.list` with the `is_member` field; both will agree with Integrations. Don't take a missing entry in the default Members panel as evidence the bot isn't joined.
+
 ### State machine flap on synthetic data
 
 The frequency detector ticks every 30 seconds (constant `tickInterval` in `internal/app/app.go`). If a sender's baseline mean inter-arrival is much smaller than 30 seconds (typical for a synth generator), every tick finds the sender silent past the offline threshold and produces a state transition. The result is a healthy → offline → recovering → healthy flap visible in logs and Slack alerts.
