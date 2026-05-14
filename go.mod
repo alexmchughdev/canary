@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/prometheus/client_golang v1.23.2
-	github.com/slack-go/slack v0.23.0
+	github.com/slack-go/slack v0.23.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.49.1
 )
